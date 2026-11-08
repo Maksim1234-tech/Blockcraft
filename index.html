@@ -25,6 +25,16 @@ body.inv-open #hotbar{display:none}
 body.ingame.survival #stats{display:flex}
 body.inv-open #stats{display:none}
 #hearts,#hunger{display:flex;gap:1px}
+#bossbar{position:fixed;top:12px;left:50%;transform:translateX(-50%);width:min(420px,80vw);display:none;pointer-events:none;text-align:center;color:#f0e0ff;font:bold 14px 'Courier New',monospace;text-shadow:1px 1px 0 #000}
+#bossbg{height:10px;background:#2a1838;border:2px solid #000;margin-top:3px}
+#bossfill{height:100%;width:100%;background:#c040e0}
+#ending{position:fixed;inset:0;background:#000;display:none;z-index:60;overflow:hidden;color:#e8dcff;font:20px/1.8 'Courier New',monospace;text-align:center;cursor:pointer}
+#ending.on{display:block}
+#endtxt{position:absolute;left:50%;top:100%;width:min(680px,90vw);transform:translate(-50%,0);animation:endroll 80s linear forwards}
+@keyframes endroll{to{transform:translate(-50%,calc(-100% - 100vh))}}
+#armorbar{position:fixed;bottom:100px;left:calc(50% - min(230px,46vw));color:#dfe6f2;font:bold 14px 'Courier New',monospace;text-shadow:1px 1px 0 #000;display:none;pointer-events:none}
+body.ingame.survival #armorbar.on{display:block}
+body.inv-open #armorbar{display:none}
 #hunger{flex-direction:row-reverse}
 #stats canvas{width:19px;height:19px;image-rendering:pixelated}
 #bname{position:fixed;bottom:112px;left:50%;transform:translateX(-50%);color:#fff;font-size:16px;text-shadow:2px 2px #000;opacity:0;transition:opacity .4s;pointer-events:none}
@@ -126,6 +136,9 @@ body.menu #chatlog{display:none}
 <div id="crosshair"></div>
 <div id="hud"></div>
 <div id="bname"></div>
+<div id="armorbar"></div>
+<div id="bossbar"><div id="bossname">Ender Dragon</div><div id="bossbg"><div id="bossfill"></div></div></div>
+<div id="ending"><div id="endtxt"></div></div>
 <div id="stats"><div id="hearts"></div><div id="hunger"></div></div>
 <div id="hotbar"></div>
 <div id="held"></div>
@@ -256,9 +269,9 @@ const $ = id => document.getElementById(id);
 
 /* ============================== constants ============================== */
 const CS = 16, WH = 80, SEA = 22;
-const TS = 16, AN = 8;                // tile size, atlas tiles per row
-const B = {AIR:0,GRASS:1,DIRT:2,STONE:3,SAND:4,LOG:5,LEAVES:6,PLANKS:7,COBBLE:8,WATER:9,GLASS:10,BRICK:11,COAL:12,SNOW:13,LAMP:14,CRAFT:15,BED:16,WOOL:17,FURNACE:18,FURNACE_ON:19,IRONORE:20};
-const I = {APPLE:100,PORK:101,STEAK:102,BREAD:103,FLESH:104,STICK:105,COAL:106,CHARCOAL:107,IRON:108,COOKED:109,BEEF:110};
+const TS = 16, AN = 16;                // tile size, atlas tiles per row
+const B = {AIR:0,GRASS:1,DIRT:2,STONE:3,SAND:4,LOG:5,LEAVES:6,PLANKS:7,COBBLE:8,WATER:9,GLASS:10,BRICK:11,COAL:12,SNOW:13,LAMP:14,CRAFT:15,BED:16,WOOL:17,FURNACE:18,FURNACE_ON:19,IRONORE:20,LAVA:21,OBSIDIAN:22,ENDSTONE:23,PORTAL:24,DRAGONEGG:25};
+const I = {APPLE:100,PORK:101,STEAK:102,BREAD:103,FLESH:104,STICK:105,COAL:106,CHARCOAL:107,IRON:108,COOKED:109,BEEF:110,BUCKET:111,WBUCKET:112,LBUCKET:113,PEARL:114,EYE:115,LEATHER:116,ARROW:117,BOW:118};
 const DEF = [null,
   {n:'Grass Block', t:0,  b:2,  s:1},
   {n:'Dirt',        t:2,  b:2,  s:2},
@@ -280,6 +293,11 @@ const DEF = [null,
   {n:'Furnace',        t:37, b:37, s:38},
   {n:'Lit Furnace',    t:37, b:37, s:39, lamp:true},
   {n:'Iron Ore',       t:36, b:36, s:36},
+  {n:'Lava',           t:64, b:64, s:64, liquid:true, lamp:true, lava:true},
+  {n:'Obsidian',       t:65, b:65, s:65},
+  {n:'End Stone',      t:66, b:66, s:66},
+  {n:'End Portal',     t:67, b:67, s:67, liquid:true, lamp:true, portal:true},
+  {n:'Dragon Egg',     t:68, b:68, s:68},
 ];
 DEF.forEach(d => { if (d) { d.opaque = !d.cut && !d.glass && !d.liquid; d.solid = !d.liquid; } });
 const ITEMS = {
@@ -298,7 +316,31 @@ const ITEMS = {
   108: {n:'Iron Ingot',      t:33},
   109: {n:'Cooked Porkchop', t:34, food:8},
   110: {n:'Raw Beef',        t:35, food:3},
+  111: {n:'Bucket',          t:69},
+  112: {n:'Water Bucket',    t:70},
+  113: {n:'Lava Bucket',     t:71},
+  114: {n:'Ender Pearl',     t:72},
+  115: {n:'Eye of Ender',    t:73},
+  116: {n:'Leather',         t:75},
+  117: {n:'Arrow',           t:77},
+  118: {n:'Bow',             t:76},
+  204: {n:'Enderman Spawn Egg', t:74, egg:'enderman'},
 };
+// ---- armour: leather and iron, helmet / chestplate / leggings / boots (ids 400 + tier*4 + slot) ----
+const ARMOR = {}, ARMOR_IDS = [];
+const ARMOR_SLOTS = ['Helmet', 'Chestplate', 'Leggings', 'Boots'];
+(function () {
+  const tiers = [['Leather', 55, [1, 3, 2, 1]], ['Iron', 165, [2, 6, 5, 2]]];
+  tiers.forEach((tr, ti) => ARMOR_SLOTS.forEach((nm, si) => {
+    const id = 400 + ti * 4 + si;
+    ITEMS[id] = { n: tr[0] + ' ' + nm, t: 80 + ti * 4 + si, armor: si };
+    ARMOR[id] = { slot: si, def: tr[2][si], dur: Math.round(tr[1] * [0.68, 1, 0.94, 0.8][si]) };
+    ARMOR_IDS.push(id);
+  }));
+})();
+const armor = [null, null, null, null];
+const armorDef = () => armor.reduce((a, s) => a + (s ? ARMOR[s.id].def : 0), 0);
+const isFluid = id => id === B.WATER || id === B.LAVA || id === B.PORTAL;
 // ---- tools: wooden / stone / iron x sword, pickaxe, axe, shovel (ids 300+tier*10+kind) ----
 const TOOLS = {}, TOOL_IDS = [];
 (function () {
@@ -311,17 +353,17 @@ const TOOLS = {}, TOOL_IDS = [];
     TOOL_IDS.push(id);
   }));
 })();
-const maxStack = id => TOOLS[id] ? 1 : 64;
+const maxStack = id => (TOOLS[id] || ARMOR[id] || id === I.BUCKET || id === I.WBUCKET || id === I.LBUCKET || id === I.BOW) ? 1 : (id === I.PEARL || id === I.EYE) ? 16 : 64;
 const SMELT_T = 6;                                   // seconds per item
 const SMELT = {}; SMELT[B.IRONORE] = I.IRON; SMELT[B.SAND] = B.GLASS; SMELT[B.COBBLE] = B.STONE; SMELT[B.LOG] = I.CHARCOAL; SMELT[I.PORK] = I.COOKED; SMELT[I.BEEF] = I.STEAK;
 const FUEL = {}; FUEL[I.COAL] = 48; FUEL[I.CHARCOAL] = 48; FUEL[B.LOG] = 9; FUEL[B.PLANKS] = 4.5; FUEL[I.STICK] = 3;
 const infoOf = id => id < 100 ? DEF[id] : ITEMS[id];
-const HARDNESS = {1:0.6,2:0.5,3:2.2,4:0.5,5:1.8,6:0.2,7:1.3,8:2.6,10:0.3,11:2.6,12:2.8,13:0.3,14:0.6,15:1.5,16:0.4,17:0.5,18:3,19:3,20:3};
-const BLOCK_TOOL = {1:'shovel',2:'shovel',3:'pickaxe',4:'shovel',5:'axe',7:'axe',8:'pickaxe',11:'pickaxe',12:'pickaxe',13:'shovel',15:'axe',18:'pickaxe',19:'pickaxe',20:'pickaxe'};
-const LEVEL_REQ = {3:1,8:1,11:1,12:1,18:1,19:1,20:2};   // pickaxe level needed for the block to drop anything
+const HARDNESS = {22:14,23:3,25:3,1:0.6,2:0.5,3:2.2,4:0.5,5:1.8,6:0.2,7:1.3,8:2.6,10:0.3,11:2.6,12:2.8,13:0.3,14:0.6,15:1.5,16:0.4,17:0.5,18:3,19:3,20:3};
+const BLOCK_TOOL = {22:'pickaxe',23:'pickaxe',25:'pickaxe',1:'shovel',2:'shovel',3:'pickaxe',4:'shovel',5:'axe',7:'axe',8:'pickaxe',11:'pickaxe',12:'pickaxe',13:'shovel',15:'axe',18:'pickaxe',19:'pickaxe',20:'pickaxe'};
+const LEVEL_REQ = {22:3,3:1,8:1,11:1,12:1,18:1,19:1,20:2};   // pickaxe level needed for the block to drop anything
 const PALETTE_IDS = [];
-for (let i = 1; i < DEF.length; i++) if (i !== B.WATER && i !== B.FURNACE_ON) PALETTE_IDS.push(i);
-PALETTE_IDS.push(100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, ...TOOL_IDS, 200, 201, 202, 203);
+for (let i = 1; i < DEF.length; i++) if (i !== B.WATER && i !== B.LAVA && i !== B.PORTAL && i !== B.FURNACE_ON) PALETTE_IDS.push(i);
+PALETTE_IDS.push(100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, ...TOOL_IDS, ...ARMOR_IDS, 200, 201, 202, 203, 204);
 const CREATIVE_HOTBAR = [B.GRASS, B.DIRT, B.STONE, B.COBBLE, B.PLANKS, B.LOG, B.GLASS, B.BRICK, B.LAMP];
 
 let SEED = 0;
@@ -604,6 +646,7 @@ function drawTextures() {
   eggTile(27, [112, 76, 52],   [238, 232, 220], 66);
   eggTile(28, [232, 230, 224], [150, 146, 140], 67);
   eggTile(29, [100, 164, 82],  [46, 88, 48], 68);
+  eggTile(74, [24, 20, 32], [200, 70, 230], 69);
   // ---- iron ore + furnace ----
   const oreBlobs = [[4, 3], [11, 4], [3, 10], [9, 11], [13, 12]];
   tile(36, (x, y) => {
@@ -730,6 +773,70 @@ function drawTextures() {
   ['wood', 'stone', 'iron'].forEach((m, ti) => ['sword', 'pickaxe', 'axe', 'shovel'].forEach((t, ki) => toolTile(40 + ti * 4 + ki, t, MAT[m])));
 }
 drawTextures();
+function drawTexturesExtra() {
+  // lava, obsidian, end stone, end portal, dragon egg
+  tile(64, (x, y) => {
+    const v = fbm2(x * 0.3, y * 0.3, 3, 301) * 0.78 + hash(x, y, 302, 302) * 0.22;
+    if (v > 0.64) return [255, 232, 110]; if (v > 0.52) return [255, 150 + (v - 0.52) * 400, 26]; if (v > 0.4) return [228, 86, 12]; return [170, 44, 8];
+  });
+  tile(65, (x, y) => { const n = hash(x, y, 311, 311); let c = [20 + n * 14, 10 + n * 8, 36 + n * 22]; if (hash(x >> 1, y >> 1, 312, 312) > 0.88) c = [62, 30, 96]; if (hash(x, y, 313, 313) > 0.97) c = [120, 80, 170]; return c; });
+  tile(66, (x, y) => { const n = hash(x, y, 321, 321) - 0.5; let c = [224 + n * 22, 224 + n * 22, 160 + n * 26]; if (hash(x, y, 322, 322) > 0.93) c = [c[0] - 40, c[1] - 40, c[2] - 34]; return c; });
+  tile(67, (x, y) => { const h = hash(x, y, 331, 331); if (h > 0.93) return [120, 230, 210]; if (h > 0.82) return [140, 70, 220]; return [12 + h * 14, 6 + h * 8, 30 + h * 30]; });
+  tile(68, (x, y) => { const h = hash(x, y, 341, 341); const e = Math.hypot(x - 7.5, y - 7.5) > 7.2; if (h > 0.86) return [160, 60, 200]; return [12 + h * 10, 6 + h * 5, 22 + h * 14, 255]; });
+  // helpers for item sprites
+  const shade = (c, k) => [c[0] * k, c[1] * k, c[2] * k];
+  const shapeTile = (i, inside, base) => tile(i, (x, y) => {
+    if (!inside(x, y)) return [0, 0, 0, 0];
+    const edge = !inside(x - 1, y) || !inside(x + 1, y) || !inside(x, y - 1) || !inside(x, y + 1);
+    if (edge) return shade(base, 0.42);
+    const n = (hash(x, y, i, i) - 0.5) * 16, k = 1.16 - (x + y) / 36;
+    return [base[0] * k + n, base[1] * k + n, base[2] * k + n];
+  });
+  const bucketTile = (i, fill) => tile(i, (x, y) => {
+    const o = Math.floor((y - 4) / 3), body = y >= 4 && y <= 13 && x >= 3 + o && x <= 12 - o;
+    const handle = (y === 2 && x >= 4 && x <= 11) || (y === 3 && (x === 3 || x === 12));
+    if (handle) return [92, 92, 100];
+    if (!body) return [0, 0, 0, 0];
+    if (y === 4) return [120, 120, 128];
+    if ((y === 5 || y === 6) && x >= 4 && x <= 11) return fill ? (y === 5 ? shade(fill, 1.1) : fill) : [34, 34, 40];
+    if (x === 3 + o || x === 12 - o || y === 13) return [96, 98, 108];
+    const n = (hash(x, y, i, i) - 0.5) * 12; return [186 + n, 188 + n, 198 + n];
+  });
+  bucketTile(69, null); bucketTile(70, [64, 110, 230]); bucketTile(71, [255, 130, 24]);
+  const orb = (i, eye) => tile(i, (x, y) => {
+    const d = Math.hypot(x - 7.5, y - 8);
+    if (d > 5.4) return [0, 0, 0, 0];
+    if (d > 4.5) return [10, 40, 36];
+    if (eye && d < 1.9) return [14, 8, 24];
+    if (eye && d < 3.4) return [200, 255, 150];
+    const n = (hash(x, y, i, i) - 0.5) * 18, hl = (x + y < 13 && d < 3.6) ? 40 : 0;
+    return [26 + n + hl, 128 + n + hl, 108 + n + hl];
+  });
+  orb(72, false); orb(73, true);
+  shapeTile(75, (x, y) => Math.abs(x - 7.5) <= 5.5 && Math.abs(y - 8) <= 4.5 && !((x < 3 || x > 12) && (y < 4 || y > 11)), [158, 100, 58]);
+  tile(76, (x, y) => {                                           // bow
+    const t = (y - 1) / 13, ax = 4 + Math.round(5 * Math.sin(Math.PI * t));
+    if (y >= 1 && y <= 14 && x === ax) return [150, 104, 56];
+    if (y >= 1 && y <= 14 && x === ax - 1 && Math.abs(t - 0.5) < 0.45) return [96, 66, 36];
+    if (y >= 2 && y <= 13 && x === 4 && ax > 4) return [236, 236, 240];
+    return [0, 0, 0, 0];
+  });
+  tile(77, (x, y) => {                                           // arrow
+    const k = 15 - x;
+    if (y === k - 0 && x >= 3 && x <= 12) return [150, 108, 60];
+    if (x >= 11 && x <= 14 && y >= 1 && y <= 4 && x + (4 - y) >= 14 && y <= k + 0) return [150, 152, 160];
+    if ((x === 2 && y === 12) || (x === 3 && y === 13) || (x === 2 && y === 13) || (x === 4 && y === 14)) return [236, 236, 240];
+    return [0, 0, 0, 0];
+  });
+  const A = [
+    (x, y) => y >= 3 && y <= 9 && x >= 3 && x <= 12 && !(y === 3 && (x < 5 || x > 10)) && !(y >= 7 && x >= 5 && x <= 10),
+    (x, y) => ((y >= 3 && y <= 13 && x >= 4 && x <= 11) || (y >= 3 && y <= 9 && ((x >= 1 && x <= 3) || (x >= 12 && x <= 14)))) && !(y <= 4 && x >= 6 && x <= 9),
+    (x, y) => (y >= 3 && y <= 5 && x >= 3 && x <= 12) || (y >= 6 && y <= 13 && ((x >= 3 && x <= 6) || (x >= 9 && x <= 12))),
+    (x, y) => ((y >= 7 && y <= 12 && ((x >= 3 && x <= 6) || (x >= 9 && x <= 12))) || (y >= 11 && y <= 13 && ((x >= 2 && x <= 6) || (x >= 9 && x <= 13)))),
+  ];
+  [[158, 100, 58], [204, 208, 216]].forEach((c, ti) => A.forEach((f, si) => shapeTile(80 + ti * 4 + si, f, c)));
+}
+drawTexturesExtra();
 
 const tileAvg = [];
 (function () {
@@ -757,6 +864,12 @@ function skinCanvas(r, g, b, amp, seed, extra) {
 const px = (g, c, x, y, w = 1, h = 1) => { g.fillStyle = c; g.fillRect(x, y, w, h); };
 const MT = {};
 (function buildMobTextures() {
+  const tex2 = c => { const t = new THREE.CanvasTexture(c); t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; return t; };
+  MT.endbody = tex2(skinCanvas(20, 18, 26, 8, 801));
+  MT.endface = tex2(skinCanvas(20, 18, 26, 8, 802, g => { px(g, '#e8a0ff', 2, 6, 5, 2); px(g, '#ffffff', 3, 6, 2, 2); px(g, '#e8a0ff', 9, 6, 5, 2); px(g, '#ffffff', 10, 6, 2, 2); px(g, '#0a0810', 4, 11, 8, 2); }));
+  MT.dragon = tex2(skinCanvas(30, 24, 38, 10, 803));
+  MT.dragonface = tex2(skinCanvas(30, 24, 38, 10, 804, g => { px(g, '#d040ff', 2, 5, 4, 2); px(g, '#d040ff', 10, 5, 4, 2); px(g, '#0a0810', 3, 11, 10, 2); }));
+  MT.dragonwing = tex2(skinCanvas(52, 40, 62, 12, 805));
   const tex = c => { const t = new THREE.CanvasTexture(c); t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; return t; };
   MT.pig      = tex(skinCanvas(238, 150, 160, 22, 61));
   MT.pigleg   = tex(skinCanvas(222, 132, 142, 22, 62));
@@ -859,6 +972,7 @@ function getHeight(x, z) {
 }
 
 function terrainGen(cx, cz) {
+  if (inEnd(cx * CS + 8, cz * CS + 8)) return endGen(cx, cz);
   const data = new Uint8Array(CS * CS * WH);
   const x0 = cx * CS, z0 = cz * CS;
   for (let z = 0; z < CS; z++) for (let x = 0; x < CS; x++) {
@@ -874,6 +988,7 @@ function terrainGen(cx, cz) {
       data[(y * CS + z) * CS + x] = id;
     }
     for (let y = h + 1; y <= SEA; y++) data[(y * CS + z) * CS + x] = B.WATER;
+    for (let y = 1; y <= 9 && y < h; y++) if (data[(y * CS + z) * CS + x] === 0) data[(y * CS + z) * CS + x] = B.LAVA;   // deep caves hold lava
   }
   const put = (wx, y, wz, id, onlyAir) => {
     const lx = wx - x0, lz = wz - z0;
@@ -1026,7 +1141,7 @@ function genChunk(cx, cz) {
   let top = SEA;
   for (let z = 0; z < CS; z++) for (let x = 0; x < CS; x++) {
     let y = WH - 1;
-    while (y > 0) { const id = data[(y * CS + z) * CS + x]; if (id !== 0 && id !== B.WATER) break; y--; }
+    while (y > 0) { const id = data[(y * CS + z) * CS + x]; if (id !== 0 && !isFluid(id)) break; y--; }
     hm[z * CS + x] = y; if (y > top) top = y;
   }
   return { cx, cz, data, hm, top: Math.min(WH - 1, top + 1), mesh: null, tmesh: null, dirty: true, mod: !!saved || !!pe, saveDirty: !!pe || savedDirty.delete(cx + ',' + cz) };
@@ -1170,10 +1285,10 @@ function setBlock(x, y, z, id) {
   const lampChange = (oldId && DEF[oldId].lamp) || (id && DEF[id].lamp);
   if (lampChange) c.lamps = undefined;
   const hi = lz * CS + lx;
-  if (id !== 0 && id !== B.WATER) { if (y > c.hm[hi]) c.hm[hi] = y; if (y + 1 > c.top) c.top = Math.min(WH - 1, y + 1); }
+  if (id !== 0 && !isFluid(id)) { if (y > c.hm[hi]) c.hm[hi] = y; if (y + 1 > c.top) c.top = Math.min(WH - 1, y + 1); }
   else if (y === c.hm[hi]) {
     let yy = y - 1;
-    while (yy > 0) { const q = c.data[(yy * CS + lz) * CS + lx]; if (q !== 0 && q !== B.WATER) break; yy--; }
+    while (yy > 0) { const q = c.data[(yy * CS + lz) * CS + lx]; if (q !== 0 && !isFluid(q)) break; yy--; }
     c.hm[hi] = yy;
   }
   const list = [c], add = (cx, cz) => { const n = getChunk(cx, cz); if (n && !list.includes(n)) list.push(n); };
@@ -1305,9 +1420,14 @@ function updateSky(time) {
   skyCol.copy(cNight).lerp(cDay, day);
   const dusk = Math.max(0, 1 - Math.abs(sh) / 0.32) * 0.65;
   skyCol.lerp(cDusk, dusk);
-  const bright = 0.3 + 0.7 * day;
+  const endZ = inEnd(P.x, P.z);
+  if (endZ) { skyCol.setRGB(0.07, 0.04, 0.11); dayF = 0.2; }
+  const bright = endZ ? 0.62 : 0.3 + 0.7 * day;
   const cp = camera.position;
-  if (underwater) {
+  if (underLava) {
+    tmpC.setRGB(0.8, 0.28, 0.04);
+    scene.fog.color.copy(tmpC); scene.fog.near = 0.1; scene.fog.far = 4; renderer.setClearColor(tmpC);
+  } else if (underwater) {
     tmpC.copy(cWater).multiplyScalar(bright);
     scene.fog.color.copy(tmpC); scene.fog.near = 0.5; scene.fog.far = 22; renderer.setClearColor(tmpC);
   } else {
@@ -1317,10 +1437,10 @@ function updateSky(time) {
   const r = bright * (0.9 + 0.1 * day), g = bright * (0.93 + 0.07 * day), b = Math.min(1, bright * 1.04);
   matOpaque.color.setRGB(r, g, b); matTrans.color.setRGB(r, g, b);
   cloudMat.color.setRGB(Math.min(1, bright * 1.05 + dusk * 0.25), bright, bright * (1 - dusk * 0.35));
-  clouds.visible = S.clouds;
-  sun.position.copy(cp).addScaledVector(sunDir, 800); sun.lookAt(cp); sun.visible = sh > -0.25;
-  moon.position.copy(cp).addScaledVector(sunDir, -800); moon.lookAt(cp); moon.visible = sh < 0.25;
-  stars.position.copy(cp); starMat.opacity = Math.max(0, 1 - day * 1.7);
+  clouds.visible = S.clouds && !endZ;
+  sun.position.copy(cp).addScaledVector(sunDir, 800); sun.lookAt(cp); sun.visible = sh > -0.25 && !endZ;
+  moon.position.copy(cp).addScaledVector(sunDir, -800); moon.lookAt(cp); moon.visible = sh < 0.25 && !endZ;
+  stars.position.copy(cp); starMat.opacity = endZ ? 1 : Math.max(0, 1 - day * 1.7);
   clouds.position.set(cp.x, WH + 22, cp.z);
   cloudTex.offset.set(cp.x / CLOUD_W + time * 0.0045, -cp.z / CLOUD_W);
   ambient.intensity = 0.38 + 0.42 * day;
@@ -1422,6 +1542,7 @@ for (let i = 0; i < 10; i++) {
   const h = document.createElement('canvas'); h.width = h.height = 9; $('hearts').appendChild(h); heartEls.push(h);
   const s = document.createElement('canvas'); s.width = s.height = 9; $('hunger').appendChild(s); shankEls.push(s);
 }
+function drawArmor() { const a = armorDef(), el = $('armorbar'); el.textContent = '\u{1F6E1} ' + a; el.classList.toggle('on', a > 0); }
 function drawStats() {
   for (let i = 0; i < 10; i++) {
     const hv = Math.max(0, Math.min(2, stats.hp - i * 2));
@@ -1461,7 +1582,7 @@ function slotNode(i, cls, arr) {
     s.appendChild(iconEl(arr[i].id));
     if (arr[i].n > 1) { const c = document.createElement('i'); c.textContent = arr[i].n; s.appendChild(c); }
     s.title = infoOf(arr[i].id).n;
-    const tl = TOOLS[arr[i].id];
+    const tl = TOOLS[arr[i].id] || ARMOR[arr[i].id];
     if (tl && arr[i].d > 0) {
       const left = Math.max(0, tl.dur - arr[i].d), frac = left / tl.dur;
       const bar = document.createElement('div'); bar.className = 'dur';
@@ -1593,7 +1714,17 @@ const RECIPES = [
     { sh: [[m], [S], [S]], out: [base + 3, 1] }                               // shovel
   );
 });
-const RECIPE_HINT = 'Recipes: Log = 4 Planks | 4 Planks (2x2) = Crafting Table | 4 Sand (2x2) = 2 Glass | 4 Cobblestone (2x2) = 4 Bricks | Glass above Coal = Lamp | 2 Planks stacked = 4 Sticks | At a crafting table (right click it): 3 Wool above 3 Planks = Bed | 8 Cobblestone in a ring = Furnace | Tools (head = planks, cobblestone or iron ingot): Pickaxe = 3 heads over 2 sticks | Axe = 3 heads + 2 sticks | Shovel = 1 head over 2 sticks | Sword = 2 heads over 1 stick. Sheep drop wool. Stone and ore need a pickaxe (iron ore needs a stone pickaxe).';
+[[I.LEATHER, 400], [I.IRON, 404]].forEach(([m, base]) => RECIPES.push(
+  { sh: [[m, m, m], [m, 0, m]], out: [base, 1] },
+  { sh: [[m, 0, m], [m, m, m], [m, m, m]], out: [base + 1, 1] },
+  { sh: [[m, m, m], [m, 0, m], [m, 0, m]], out: [base + 2, 1] },
+  { sh: [[m, 0, m], [m, 0, m]], out: [base + 3, 1] }));
+RECIPES.push(
+  { sh: [[I.IRON, 0, I.IRON], [0, I.IRON, 0]], out: [I.BUCKET, 1] },
+  { sh: [[I.PEARL], [I.COAL]], out: [I.EYE, 1] },
+  { sh: [[I.COAL], [I.STICK]], out: [I.ARROW, 4] },
+  { sh: [[0, I.STICK, B.WOOL], [I.STICK, 0, B.WOOL], [0, I.STICK, B.WOOL]], out: [I.BOW, 1] });
+const RECIPE_HINT = 'Iron Bucket = 3 iron in a V | Eye of Ender = Ender Pearl above Coal | Arrow = Coal above Stick (4) | Bow = 3 sticks + 3 wool | Armour (iron or leather, at a crafting table): helmet = 3 over 2 | chestplate = 8 | leggings = 7 | boots = 4 | Water Bucket on Lava (or Lava Bucket on Water) = Obsidian (needs an iron pickaxe). To open the End: build a 5x5 ring of obsidian, then right-click it with an Eye of Ender. Recipes: Log = 4 Planks | 4 Planks (2x2) = Crafting Table | 4 Sand (2x2) = 2 Glass | 4 Cobblestone (2x2) = 4 Bricks | Glass above Coal = Lamp | 2 Planks stacked = 4 Sticks | At a crafting table (right click it): 3 Wool above 3 Planks = Bed | 8 Cobblestone in a ring = Furnace | Tools (head = planks, cobblestone or iron ingot): Pickaxe = 3 heads over 2 sticks | Axe = 3 heads + 2 sticks | Shovel = 1 head over 2 sticks | Sword = 2 heads over 1 stick. Sheep drop wool. Stone and ore need a pickaxe (iron ore needs a stone pickaxe).';
 function findRecipe() {
   const N = craftN;
   let r0 = N, r1 = -1, c0 = N, c1 = -1;
@@ -1653,6 +1784,17 @@ function slotClick(i, btn, arrIn) {
   }
   renderHeld(); renderInv(); renderHotbar();
 }
+function armorClick(i) {
+  if (!held) { if (armor[i]) { held = armor[i]; armor[i] = null; } }
+  else if (ARMOR[held.id] && ARMOR[held.id].slot === i) { const old = armor[i]; armor[i] = { id: held.id, n: 1, d: held.d || 0 }; held = old; }
+  drawArmor(); renderHeld(); renderInv();
+}
+function equipArmor(s) {
+  const a = ARMOR[s.id], old = armor[a.slot];
+  armor[a.slot] = { id: s.id, n: 1, d: s.d || 0 };
+  inv[sel] = old ? { id: old.id, n: 1, d: old.d || 0 } : null;
+  sfx(1500, 0.08, 0.4); toast(infoOf(s.id).n + ' equipped'); drawArmor(); invChanged();
+}
 function palClick(id, btn) {
   // clicking a catalogue block: pick it up (it follows the cursor); clicking one again while holding makes it vanish
   if (held) held = null;
@@ -1696,6 +1838,15 @@ function renderInv() {
     row.appendChild(grid); row.appendChild(arrow); row.appendChild(out); root.appendChild(row);
     const hint = document.createElement('div'); hint.className = 'rhint'; hint.textContent = RECIPE_HINT; root.appendChild(hint);
   }
+  const ah = document.createElement('h3'); ah.textContent = 'ARMOUR  (right click armour in your hand to wear it, or click a slot)'; root.appendChild(ah);
+  const arow = document.createElement('div'); arow.className = 'grid9'; arow.style.gridTemplateColumns = 'repeat(4, 52px)';
+  for (let i = 0; i < 4; i++) {
+    const c = slotNode(i, 'cell', armor); if (!armor[i]) c.title = ARMOR_SLOTS[i];
+    c.onmousedown = e => { e.preventDefault(); e.stopPropagation(); armorClick(i); };
+    c.oncontextmenu = e => e.preventDefault();
+    arow.appendChild(c);
+  }
+  root.appendChild(arow);
   const h2 = document.createElement('h3'); h2.textContent = creative ? 'INVENTORY' : 'INVENTORY  (left click: pick up / place / swap, right click: split / place one)'; root.appendChild(h2);
   const mk = (i, cls) => {
     const c = slotNode(i, 'cell ' + cls);
@@ -1772,22 +1923,25 @@ function stepBody(b, dt) {
 
 /* ============================== player ============================== */
 const P = { x: 0, y: 60, z: 0, vx: 0, vy: 0, vz: 0, yaw: 0, pitch: 0, onGround: false, blocked: false, fly: false, w: 0.3, h: 1.8, eye: 1.62, peak: 60 };
-let spaceLast = 0, sprintingNow = false;
+let spaceLast = 0, sprintingNow = false, underLava = false;
 function updatePlayer(dt, ctl) {
   const K = ctl ? keys : NOKEYS;
   const fx = -Math.sin(P.yaw), fz = -Math.cos(P.yaw), rx = Math.cos(P.yaw), rz = -Math.sin(P.yaw);
   let ix = (K.KeyD ? 1 : 0) - (K.KeyA ? 1 : 0), iz = (K.KeyW ? 1 : 0) - (K.KeyS ? 1 : 0);
   const il = Math.hypot(ix, iz) || 1; ix /= il; iz /= il;
   const sneak = !!(K.ShiftLeft || K.ShiftRight), sprint = !!K.KeyR;
-  const feetWater = get(Math.floor(P.x), Math.floor(P.y + 0.4), Math.floor(P.z)) === B.WATER;
-  const headWater = get(Math.floor(P.x), Math.floor(P.y + P.eye), Math.floor(P.z)) === B.WATER;
+  const feetLava = get(Math.floor(P.x), Math.floor(P.y + 0.4), Math.floor(P.z)) === B.LAVA;
+  const feetWater = feetLava || get(Math.floor(P.x), Math.floor(P.y + 0.4), Math.floor(P.z)) === B.WATER;
+  underLava = get(Math.floor(P.x), Math.floor(P.y + P.eye), Math.floor(P.z)) === B.LAVA;
+  const headWater = underLava || get(Math.floor(P.x), Math.floor(P.y + P.eye), Math.floor(P.z)) === B.WATER;
   underwater = headWater;
+  if (feetLava && !P.fly) { if (W && W.mode === 'survival') { hurtPlayer(4, null, undefined, true); } P.peak = P.y; }
   sprintingNow = sprint && !sneak && (ix || iz) && !P.fly;
   let speed = P.fly ? (sprint ? 22 : 11) : (sneak ? 1.6 : sprint ? 6.2 : 4.4);
   if (W && W.mode === 'survival' && stats.food <= 6 && !P.fly) speed = Math.min(speed, 4.4);
   const sneaking = sneak && !P.fly && !feetWater;
   P.eye += ((sneaking ? 1.27 : 1.62) - P.eye) * Math.min(1, 14 * dt);
-  if (feetWater && !P.fly) speed *= 0.62;
+  if (feetWater && !P.fly) speed *= feetLava ? 0.4 : 0.62;
   const tx = (fx * iz + rx * ix) * speed, tz = (fz * iz + rz * ix) * speed;
   const acc = P.fly ? 8 : P.onGround ? 14 : feetWater ? 6 : 3.2;
   const k = Math.min(1, acc * dt);
@@ -1809,11 +1963,15 @@ function updatePlayer(dt, ctl) {
   }
   if (feetWater || P.fly) P.peak = P.y;
   else if (P.onGround) {
-    if (!wasGround) { const dmg = Math.floor(P.peak - P.y - 3); if (dmg > 0) hurtPlayer(dmg, null); }
+    if (!wasGround) { const dmg = Math.floor(P.peak - P.y - 3); if (dmg > 0) hurtPlayer(dmg, null, undefined, true); }
     P.peak = P.y;
   } else P.peak = Math.max(P.peak, P.y);
   if (P.fly && P.onGround) P.fly = false;
-  if (P.y < -20) { P.y = WH; P.vy = 0; P.peak = WH; }
+  if (P.y < -20) {
+    if (inEnd(P.x, P.z)) { if (W && W.mode === 'survival') { stats.invul = 0; hurtPlayer(999, null, undefined, true); } else teleportPlayer(EX - 28.5, EZ + 0.5); }
+    else { P.y = WH; P.vy = 0; P.peak = WH; }
+  }
+  checkPortal(dt);
   camera.position.set(P.x, P.y + P.eye, P.z);
   camera.rotation.set(P.pitch, P.yaw, 0);
 }
@@ -1821,8 +1979,14 @@ function updatePlayer(dt, ctl) {
 /* ---- health ---- */
 const hurtEl = $('hurt');
 let hurtT = 0;
-function hurtPlayer(d, sx, sz) {
+function hurtPlayer(d, sx, sz, raw) {
   if (!W || W.mode !== 'survival' || stats.invul > 0 || state === 'dead') return;
+  const def = raw ? 0 : armorDef();
+  if (def > 0) {
+    d = Math.max(1, Math.round(d * (1 - Math.min(20, def) * 0.04)));
+    armor.forEach((a, i) => { if (a) { a.d = (a.d || 0) + 1; if (a.d >= ARMOR[a.id].dur) { armor[i] = null; toast('Your ' + infoOf(a.id).n + ' broke'); sfx(300, 0.25, 0.8); } } });
+    drawArmor(); if (state === 'inventory') renderInv();
+  }
   stats.hp = Math.max(0, stats.hp - d); stats.invul = 0.5; statsDirty = true;
   hurtEl.style.opacity = 0.9; clearTimeout(hurtT); hurtT = setTimeout(() => hurtEl.style.opacity = 0, 160);
   sfx(500, 0.18, 0.7);
@@ -1841,7 +2005,8 @@ function die() {
   held = null; renderHeld();
   craft.forEach(s => { if (s) throwItem(s.id, s.n, true); }); craft = [];
   for (let i = 0; i < 36; i++) if (inv[i]) { throwItem(inv[i].id, inv[i].n, true, inv[i].d); inv[i] = null; }
-  renderHotbar();
+  for (let i = 0; i < 4; i++) if (armor[i]) { throwItem(armor[i].id, 1, true, armor[i].d); armor[i] = null; }
+  drawArmor(); renderHotbar();
   $('deadmsg').textContent = 'Your items were dropped where you fell.';
   showScreen('s-dead');
 }
@@ -1885,7 +2050,7 @@ function updateStats(dt) {
     if (stats.regenT >= 4) { stats.regenT = 0; stats.hp++; stats.exh += 6; statsDirty = true; }
   } else if (stats.food <= 0) {
     stats.starveT += dt;
-    if (stats.starveT >= 4) { stats.starveT = 0; if (W.diff === 'hard' || stats.hp > 10) hurtPlayer(1, null); }
+    if (stats.starveT >= 4) { stats.starveT = 0; if (W.diff === 'hard' || stats.hp > 10) hurtPlayer(1, null, undefined, true); }
   } else stats.regenT = 0;
 }
 
@@ -1958,7 +2123,7 @@ function makeMob(type) {
   const grp = new THREE.Group(), mats = [];
   const M = t => { const m = new THREE.MeshLambertMaterial({ map: MT[t] }); mats.push(m); return m; };
   const headMats = (side, face) => [M(side), M(side), M(side), M(side), M(face), M(side)];
-  const legs = [], arms = [];
+  const legs = [], arms = [], wings = [];
   let w, h, hp, hostile = false;
   if (type === 'pig') {
     w = 0.4; h = 0.9; hp = 10;
@@ -1979,6 +2144,23 @@ function makeMob(type) {
     grp.add(mkBox(0.42, 0.42, 0.42, headMats('sheepleg', 'sheepface'), 0, 1.0, 0.64));
     grp.add(mkBox(0.46, 0.14, 0.46, M('sheep'), 0, 1.26, 0.6));
     [[-0.2, 0.34], [0.2, 0.34], [-0.2, -0.34], [0.2, -0.34]].forEach(([x, z]) => { const l = mkBox(0.18, 0.46, 0.18, M('sheepleg'), x, 0.46, z, true); grp.add(l); legs.push(l); });
+  } else if (type === 'enderman') {
+    w = 0.3; h = 2.9; hp = 40;
+    grp.add(mkBox(0.5, 0.9, 0.26, M('endbody'), 0, 1.85, 0));
+    grp.add(mkBox(0.5, 0.5, 0.5, headMats('endbody', 'endface'), 0, 2.55, 0));
+    [-0.11, 0.11].forEach(x => { const l = mkBox(0.14, 1.4, 0.14, M('endbody'), x, 1.4, 0, true); grp.add(l); legs.push(l); });
+    [-0.32, 0.32].forEach(x => { const a = mkBox(0.12, 1.3, 0.12, M('endbody'), x, 2.3, 0, true); grp.add(a); arms.push(a); });
+  } else if (type === 'dragon') {
+    w = 1.6; h = 3.2; hp = 200;
+    grp.add(mkBox(1.5, 1.2, 3.6, M('dragon'), 0, 1.6, 0));
+    grp.add(mkBox(1.0, 0.9, 1.6, M('dragon'), 0, 1.8, 2.3));
+    grp.add(mkBox(1.1, 0.9, 1.5, headMats('dragon', 'dragonface'), 0, 2.0, 3.5));
+    grp.add(mkBox(0.7, 0.45, 1.0, M('dragon'), 0, 1.75, 4.5));
+    [[0.9, -2.6, 1.0], [0.8, -3.9, 0.9], [0.7, -5.2, 0.8]].forEach(([sz, z, y]) => grp.add(mkBox(sz, sz * 0.9, 1.5, M('dragon'), 0, 1.55 - (y - 1) * 0.2, z)));
+    [1, -1].forEach(sx => {
+      const pv = new THREE.Group(); pv.position.set(sx * 0.8, 2.2, 0.2);
+      pv.add(mkBox(4.6, 0.12, 2.6, M('dragonwing'), sx * 2.3, 0, 0)); grp.add(pv); wings.push(pv);
+    });
   } else {
     w = 0.3; h = 1.95; hp = 20; hostile = true;
     grp.add(mkBox(0.5, 0.75, 0.26, M('zshirt'), 0, 1.12, 0));
@@ -1987,7 +2169,7 @@ function makeMob(type) {
     [[-0.375], [0.375]].forEach(([x]) => { const a = mkBox(0.2, 0.7, 0.2, M('zskin'), x, 1.48, 0, true); a.rotation.x = -1.45; grp.add(a); arms.push(a); });
   }
   scene.add(grp);
-  return { type, hostile, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, w, h, hp, yaw: Math.random() * 6.28, t: 0, moving: false, fleeT: 0, cd: 1, flash: 0, kb: 0, phase: 0, group: grp, legs, arms, mats, onGround: false, blocked: false, burn: 0 };
+  return { type, hostile, ender: type === 'enderman', boss: type === 'dragon', maxhp: hp, wings, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, w, h, hp, yaw: Math.random() * 6.28, t: 0, moving: false, fleeT: 0, cd: 1, flash: 0, kb: 0, phase: 0, group: grp, legs, arms, mats, onGround: false, blocked: false, burn: 0 };
 }
 function spawnMob(type, x, y, z) {
   if (mobs.length > 70) return null;
@@ -2010,6 +2192,7 @@ function spawnHerd(c) {
   }
 }
 function trySpawnHostile() {
+  if (inEnd(P.x, P.z)) return;
   if (!W || W.diff === 'peaceful' || W.mode === 'creative') return;
   let count = 0; for (const m of mobs) if (m.hostile) count++;
   if (count >= (W.diff === 'hard' ? 12 : 7)) return;
@@ -2021,9 +2204,10 @@ function trySpawnHostile() {
   if (!below || !DEF[below].solid || get(x, y, z) || get(x, y + 1, z)) return;
   const covered = getHeight(x, z) > y + 1;
   if (!covered && dayF > 0.3) return;                 // open sky: only at night
-  spawnMob('zombie', x + 0.5, y + 0.02, z + 0.5);
+  spawnMob(Math.random() < 0.06 && !mobs.some(q => q.ender) ? 'enderman' : 'zombie', x + 0.5, y + 0.02, z + 0.5);
 }
 function updateMob(m, dt) {
+  if (m.boss) { updateDragon(m, dt); return; }
   const dxp = P.x - m.x, dzp = P.z - m.z, dist = Math.hypot(dxp, dzp);
   let speed = 0;
   m.flash = Math.max(0, m.flash - dt); m.kb = Math.max(0, m.kb - dt); m.cd -= dt;
@@ -2038,6 +2222,8 @@ function updateMob(m, dt) {
     if (dayF > 0.6 && getHeight(Math.floor(m.x), Math.floor(m.z)) <= Math.floor(m.y)) {
       m.burn += dt; if (m.burn >= 1) { m.burn = 0; damageMob(m, 2, null); if (!mobs.includes(m)) return; }
     }
+  } else if (m.ender) {
+    speed = enderAI(m, dt, dxp, dzp, dist);
   } else {
     if (m.fleeT > 0) { m.fleeT -= dt; speed = 3.4; }
     else { wander(m, dt); if (m.moving) speed = 1.1; }
@@ -2046,7 +2232,9 @@ function updateMob(m, dt) {
     const tvx = Math.sin(m.yaw) * speed, tvz = Math.cos(m.yaw) * speed, k = Math.min(1, 10 * dt);
     m.vx += (tvx - m.vx) * k; m.vz += (tvz - m.vz) * k;
   } else { m.vx *= 0.96; m.vz *= 0.96; }
-  const inWater = get(Math.floor(m.x), Math.floor(m.y + 0.3), Math.floor(m.z)) === B.WATER;
+  const inLava = get(Math.floor(m.x), Math.floor(m.y + 0.3), Math.floor(m.z)) === B.LAVA;
+  if (inLava) { m.lavaT = (m.lavaT || 0) - dt; if (m.lavaT <= 0) { m.lavaT = 0.5; damageMob(m, 4, null); if (!mobs.includes(m)) return; } }
+  const inWater = inLava || get(Math.floor(m.x), Math.floor(m.y + 0.3), Math.floor(m.z)) === B.WATER;
   if (inWater) { m.vy = Math.min(m.vy + 40 * dt, 2.5); m.vy *= 0.9; } else m.vy = Math.max(-40, m.vy - 28 * dt);
   stepBody(m, dt);
   if (speed > 0 && m.blocked && m.onGround) m.vy = 7.6;
@@ -2057,6 +2245,7 @@ function updateMob(m, dt) {
   const sw = moving ? Math.sin(m.phase) * 0.8 : 0;
   m.legs.forEach((l, i) => l.rotation.x = (i % 2 === (m.legs.length === 4 && i > 1 ? 1 : 0) ? 1 : -1) * sw);
   if (m.hostile) m.arms.forEach((a, i) => a.rotation.x = -1.45 + (i ? -1 : 1) * sw * 0.15);
+  else if (m.ender) m.arms.forEach((a, i) => a.rotation.x = (m.angry ? -0.9 : 0) + (i ? -1 : 1) * sw * 0.4);
   m.group.position.set(m.x, m.y, m.z); m.group.rotation.y = m.yaw;
   const f = m.flash > 0 ? 0.65 : (m.burn > 0.5 ? 0.35 : 0);
   m.mats.forEach(q => q.emissive.setRGB(f, f * (m.burn > 0.5 && m.flash <= 0 ? 0.5 : 0), 0));
@@ -2070,15 +2259,16 @@ function wander(m, dt) {
 }
 function damageMob(m, dmg, fromPlayer, px, pz) {
   m.hp -= dmg; m.flash = 0.3; sfx(700, 0.12, 0.5);
-  if (fromPlayer) {
+  if (m.ender) { m.angry = true; if (fromPlayer && m.hp > 0 && Math.random() < 0.4) teleportMob(m, m.x, m.z, 8); }
+  if (fromPlayer && !m.boss) {
     const dx = m.x - (px === undefined || isNaN(px) ? P.x : px), dz = m.z - (pz === undefined || isNaN(pz) ? P.z : pz), l = Math.hypot(dx, dz) || 1;
     m.vx = dx / l * 7; m.vz = dz / l * 7; m.vy = 5; m.kb = 0.3;
-    if (!m.hostile) { m.fleeT = 5; m.yaw = Math.atan2(dx, dz); }
+    if (!m.hostile && !m.ender) { m.fleeT = 5; m.yaw = Math.atan2(dx, dz); }
   }
   if (m.hp <= 0) killMob(m);
 }
 function killMob(m) {
-  const av = m.type === 'zombie' ? [0.4, 0.6, 0.3] : m.type === 'pig' ? [0.93, 0.6, 0.63] : m.type === 'sheep' ? [0.9, 0.9, 0.88] : [0.4, 0.28, 0.18];
+  const av = m.ender ? [0.2, 0.12, 0.28] : m.boss ? [0.4, 0.2, 0.5] : m.type === 'zombie' ? [0.4, 0.6, 0.3] : m.type === 'pig' ? [0.93, 0.6, 0.63] : m.type === 'sheep' ? [0.9, 0.9, 0.88] : [0.4, 0.28, 0.18];
   for (const p of parts) {
     if (p.life > 0) continue;
     p.life = 0.5 + Math.random() * 0.5; p.m.position.set(m.x + (Math.random() - 0.5) * 0.6, m.y + Math.random() * m.h, m.z + (Math.random() - 0.5) * 0.6);
@@ -2088,20 +2278,237 @@ function killMob(m) {
   if (W.mode === 'survival' || true) {
     const rnd = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
     if (m.type === 'pig') lootItem(I.PORK, rnd(1, 3), m.x, m.y + 0.5, m.z, (Math.random() - 0.5) * 2, 3, (Math.random() - 0.5) * 2, 0.5);
-    else if (m.type === 'cow') lootItem(I.BEEF, rnd(1, 3), m.x, m.y + 0.5, m.z, (Math.random() - 0.5) * 2, 3, (Math.random() - 0.5) * 2, 0.5);
+    else if (m.type === 'cow') { lootItem(I.BEEF, rnd(1, 3), m.x, m.y + 0.5, m.z, (Math.random() - 0.5) * 2, 3, (Math.random() - 0.5) * 2, 0.5); const lt = rnd(0, 2); if (lt) lootItem(I.LEATHER, lt, m.x, m.y + 0.5, m.z, (Math.random() - 0.5) * 2, 3, (Math.random() - 0.5) * 2, 0.5); }
     else if (m.type === 'sheep') lootItem(B.WOOL, rnd(1, 2), m.x, m.y + 0.5, m.z, (Math.random() - 0.5) * 2, 3, (Math.random() - 0.5) * 2, 0.5);
+    else if (m.ender) { if (Math.random() < 0.7) lootItem(I.PEARL, 1, m.x, m.y + 0.5, m.z, (Math.random() - 0.5) * 2, 3, (Math.random() - 0.5) * 2, 0.5); }
+    else if (m.boss) dragonDied(m);
     else { const n = rnd(0, 2); if (n) lootItem(I.FLESH, n, m.x, m.y + 0.5, m.z, (Math.random() - 0.5) * 2, 3, (Math.random() - 0.5) * 2, 0.5); }
   }
   sfx(400, 0.2, 0.6);
   removeMob(m);
 }
+/* ============================== enderman ============================== */
+function teleportMob(m, cx, cz, r) {
+  for (let i = 0; i < 14; i++) {
+    const x = Math.floor(cx + (Math.random() * 2 - 1) * r), z = Math.floor(cz + (Math.random() * 2 - 1) * r);
+    if (!getChunk(x >> 4, z >> 4)) continue;
+    const y = getHeight(x, z), below = get(x, y, z);
+    if (!below || !DEF[below].solid) continue;
+    if (get(x, y + 1, z) || get(x, y + 2, z) || get(x, y + 3, z)) continue;
+    m.x = x + 0.5; m.y = y + 1.02; m.z = z + 0.5; m.vx = m.vy = m.vz = 0;
+    sfx(2500, 0.1, 0.4); return true;
+  }
+  return false;
+}
+function enderAI(m, dt, dxp, dzp, dist) {   // calm until you look at it, then it hunts you and teleports closer
+  const can = W.diff !== 'peaceful' && W.mode !== 'creative' && state !== 'dead';
+  if (!m.angry && can && dist < 32) {
+    camera.getWorldDirection(fwd);
+    const vx = m.x - P.x, vy = (m.y + 2.5) - (P.y + P.eye), vz = m.z - P.z, l = Math.hypot(vx, vy, vz) || 1;
+    if ((fwd.x * vx + fwd.y * vy + fwd.z * vz) / l > 0.988) { m.angry = true; sfx(300, 0.3, 0.6); }
+  }
+  if (m.angry && !can) m.angry = false;
+  if (m.angry) {
+    m.yaw = Math.atan2(dxp, dzp);
+    m.tpT = (m.tpT === undefined ? 3 : m.tpT) - dt;
+    if (dist > 10 && m.tpT <= 0) { m.tpT = 2 + Math.random() * 3; teleportMob(m, P.x, P.z, 5); }
+    if (dist < 1.4 && Math.abs(P.y - m.y) < 2.2 && m.cd <= 0) { m.cd = 1.0; hurtPlayer(W.diff === 'hard' ? 9 : 5, m.x, m.z); }
+    return 4.6;
+  }
+  wander(m, dt); return m.moving ? 1 : 0;
+}
+
+/* ============================== the End ============================== */
+const EX = 16000, EZ = 16000, EY = 40, ER = 34;     // a floating end-stone island far away from the spawn
+const inEnd = (x, z) => Math.abs(x - EX) < 112 && Math.abs(z - EZ) < 112;
+function endGen(cx, cz) {
+  const data = new Uint8Array(CS * CS * WH), x0 = cx * CS, z0 = cz * CS, pillars = [];
+  for (let k = 0; k < 10; k++) { const a = k / 10 * Math.PI * 2 + 0.3; pillars.push([EX + Math.round(Math.cos(a) * 22), EZ + Math.round(Math.sin(a) * 22), EY + 9 + ((k * 7) % 5) * 3]); }
+  for (let z = 0; z < CS; z++) for (let x = 0; x < CS; x++) {
+    const wx = x0 + x, wz = z0 + z, r = Math.hypot(wx - EX, wz - EZ);
+    if (r <= ER) {
+      const top = EY + (hash(wx >> 2, 0, wz >> 2, 77) > 0.75 ? 1 : 0), depth = Math.floor((1 - r / ER) * 14) + 2;
+      for (let y = Math.max(1, top - depth); y <= top; y++) data[(y * CS + z) * CS + x] = B.ENDSTONE;
+    }
+    for (const [qx, qz, qh] of pillars) if (Math.hypot(wx - qx, wz - qz) <= 2.3) for (let y = EY - 4; y <= Math.min(WH - 1, qh); y++) data[(y * CS + z) * CS + x] = B.OBSIDIAN;
+  }
+  return data;
+}
+function trySpawnEnd() {
+  if (!W || W.diff === 'peaceful') return;
+  let n = 0; for (const m of mobs) if (m.ender) n++;
+  if (n >= 7) return;
+  const a = Math.random() * 6.283, r = 6 + Math.random() * 26, x = EX + Math.cos(a) * r, z = EZ + Math.sin(a) * r;
+  const e = spawnMob('enderman', x, 0, z); if (!e) return;
+  if (!teleportMob(e, x, z, 1.5)) removeMob(e);
+}
+function teleportPlayer(x, z, y) {
+  ensureChunksAround(x, z);
+  P.x = x; P.z = z; P.y = y != null ? y : getHeight(Math.floor(x), Math.floor(z)) + 1.02;
+  P.vx = P.vy = P.vz = 0; P.peak = P.y; P.fly = false;
+  let g = 0; while (bodyHit(P, P.x, P.y, P.z) && g++ < 80) P.y += 1;
+  P.peak = P.y;
+}
+function goHome() {
+  let sp = W.spawn || [0, 70, 0];
+  if (W.bed) { ensureChunksAround(W.bed[0], W.bed[2]); if (get(W.bed[0], W.bed[1], W.bed[2]) === B.BED) sp = [W.bed[0] + 0.5, W.bed[1] + 0.6, W.bed[2] + 0.5]; }
+  teleportPlayer(sp[0], sp[2], sp[1]);
+}
+let portalCD = 0;
+function checkPortal(dt) {
+  portalCD -= dt; if (portalCD > 0 || !W || state === 'dead') return;
+  const fx = Math.floor(P.x), fz = Math.floor(P.z);
+  if (get(fx, Math.floor(P.y + 0.2), fz) !== B.PORTAL && get(fx, Math.floor(P.y + 1), fz) !== B.PORTAL) return;
+  portalCD = 4;
+  if (inEnd(P.x, P.z)) { if (W.dragonDead) showEnding(); return; }
+  teleportPlayer(EX - 28.5, EZ + 0.5); sfx(500, 0.4, 0.6); toast('You entered The End');
+}
+function useEye(s) {
+  const t = target;
+  if (!t || t.id !== B.OBSIDIAN) { toast('Use the Eye of Ender on a 5x5 obsidian ring'); return; }
+  const ring = [];
+  for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) if (Math.max(Math.abs(dx), Math.abs(dz)) === 2) ring.push([dx, dz]);
+  for (let cz = t.z - 2; cz <= t.z + 2; cz++) for (let cx = t.x - 2; cx <= t.x + 2; cx++) {
+    if (!ring.every(([dx, dz]) => get(cx + dx, t.y, cz + dz) === B.OBSIDIAN)) continue;
+    let ok = true;
+    for (let dz = -1; dz <= 1 && ok; dz++) for (let dx = -1; dx <= 1; dx++) { const q = get(cx + dx, t.y, cz + dz); if (q && !isFluid(q)) { ok = false; break; } }
+    if (!ok) continue;
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) setBlock(cx + dx, t.y, cz + dz, B.PORTAL);
+    swing = 1; sfx(400, 0.5, 0.7); toast('The portal to The End has opened!');
+    if (W.mode === 'survival') takeFromSlot(sel, 1);
+    return;
+  }
+  toast('You need a 5x5 obsidian ring with an empty 3x3 middle');
+}
+
+/* ---- ender dragon ---- */
+function updateDragon(m, dt) {
+  m.flash = Math.max(0, m.flash - dt); m.cd -= dt; m.t += dt;
+  if (m.cx === undefined) {
+    const e = inEnd(m.x, m.z);
+    m.cx = e ? EX : m.x; m.cz = e ? EZ : m.z; m.base = e ? EY + 16 : m.y; m.ang = Math.random() * 6; m.mode = 'circle'; m.modeT = 6; m.vx = m.vy = m.vz = 0;
+  }
+  const can = W.mode !== 'creative' && state !== 'dead' && W.diff !== 'peaceful';
+  let tx, ty, tz, sp = 11;
+  if (m.mode === 'dive' && can) {
+    tx = P.x; ty = P.y + 0.6; tz = P.z; sp = 17; m.modeT -= dt;
+    const dx = P.x - m.x, dy = (P.y + 1) - (m.y + 1.6), dz = P.z - m.z;
+    if (Math.hypot(dx, dy, dz) < 3.8 && m.cd <= 0) { m.cd = 1.6; hurtPlayer(W.diff === 'hard' ? 10 : 6, m.x, m.z); m.modeT = Math.min(m.modeT, 0.5); }
+    if (m.modeT <= 0) { m.mode = 'circle'; m.modeT = 9 + Math.random() * 7; }
+  } else {
+    m.ang += dt * 0.4;
+    tx = m.cx + Math.cos(m.ang) * 26; tz = m.cz + Math.sin(m.ang) * 26; ty = m.base + Math.sin(m.t * 0.6) * 5; m.modeT -= dt;
+    if (m.modeT <= 0) { if (can && Math.hypot(P.x - m.cx, P.z - m.cz) < 70) { m.mode = 'dive'; m.modeT = 6; } else m.modeT = 3; }
+  }
+  const dx = tx - m.x, dy = ty - m.y, dz = tz - m.z, l = Math.hypot(dx, dy, dz) || 1, k = Math.min(1, 2.4 * dt);
+  m.vx += (dx / l * sp - m.vx) * k; m.vy += (dy / l * sp - m.vy) * k; m.vz += (dz / l * sp - m.vz) * k;
+  m.x += m.vx * dt; m.y += m.vy * dt; m.z += m.vz * dt;
+  m.yaw += angDiff(m.yaw, Math.atan2(m.vx, m.vz)) * Math.min(1, 3 * dt);
+  m.group.position.set(m.x, m.y, m.z); m.group.rotation.y = m.yaw;
+  const fl = Math.sin(m.t * 3.2) * 0.55; m.wings.forEach((wg, i) => wg.rotation.z = (i ? -1 : 1) * fl);
+  const f = m.flash > 0 ? 0.65 : 0; m.mats.forEach(q => q.emissive.setRGB(f, 0, f * 0.5));
+}
+function dragonDied(m) {
+  if (W.dragonDead) return; W.dragonDead = true;
+  const cx = Math.floor(m.cx !== undefined ? m.cx : m.x), cz = Math.floor(m.cz !== undefined ? m.cz : m.z), by = getHeight(cx, cz) + 1;
+  for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) setBlock(cx + dx, by, cz + dz, Math.max(Math.abs(dx), Math.abs(dz)) === 2 ? B.OBSIDIAN : B.PORTAL);
+  setBlock(cx + 4, by, cz, B.DRAGONEGG);
+  addChat('The Ender Dragon has been slain! An exit portal opened in the middle of the island.', C_NET);
+  netBroadcast({ t: 'say', s: 'The Ender Dragon has been slain! An exit portal opened in the middle of the island.' });
+  sfx(200, 0.8, 0.9); saveWorld();
+}
+function updateBossBar() {
+  const d = mobs.find(q => q.boss), el = $('bossbar');
+  if (!d || state === 'menu') { el.style.display = 'none'; return; }
+  el.style.display = 'block'; $('bossfill').style.width = Math.max(0, Math.min(100, d.hp / d.maxhp * 100)) + '%';
+}
+
+/* ---- ending ---- */
+const END_TEXT = [
+  'THE END', '',
+  'You stood on a floating island in the dark,', 'and a dragon the size of a house came for you.', '',
+  'You brought a bucket, a bow, a handful of pearls,', 'and far too much stubbornness.', 'It was enough.', '',
+  'The island is quiet now.', 'Somewhere far below, the lava keeps glowing,', 'the pigs keep wandering into trouble,', 'and your bed is still waiting.', '',
+  'Every block you placed stays where you put it.', 'Every cave you dug is yours.', '',
+  'BLOCKCRAFT', 'built one request at a time', '', 'Thank you for playing.', '', '(click or press Esc to go home)'];
+function showEnding() {
+  if (state === 'ending') return;
+  document.exitPointerLock(); mL = mR = false;
+  state = 'ending'; showScreen(null);
+  const el = $('ending'); $('endtxt').innerHTML = END_TEXT.map(l => '<div>' + (l || '&nbsp;') + '</div>').join('');
+  el.classList.remove('on'); void el.offsetWidth; el.classList.add('on');
+}
+function closeEnding() {
+  if (state !== 'ending') return;
+  $('ending').classList.remove('on');
+  goHome(); state = 'paused'; showScreen('s-pause');
+}
+$('ending').addEventListener('mousedown', closeEnding);
+document.addEventListener('keydown', e => { if (state === 'ending' && (e.code === 'Escape' || e.code === 'Space' || e.code === 'Enter')) { e.preventDefault(); closeEnding(); } });
+
+/* ============================== projectiles (pearls and arrows) ============================== */
+const projs = [], pearlGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16), arrowGeo = new THREE.BoxGeometry(0.05, 0.05, 0.7);
+function spawnProj(kind, speed) {
+  camera.getWorldDirection(fwd);
+  const mesh = new THREE.Mesh(kind === 'pearl' ? pearlGeo : arrowGeo, new THREE.MeshBasicMaterial({ color: kind === 'pearl' ? 0x2fb8a0 : 0x9a6a38 }));
+  const p = { kind, x: camera.position.x + fwd.x * 0.6, y: camera.position.y - 0.1 + fwd.y * 0.6, z: camera.position.z + fwd.z * 0.6, vx: fwd.x * speed, vy: fwd.y * speed, vz: fwd.z * speed, mesh, life: 10 };
+  scene.add(mesh); projs.push(p);
+}
+function removeProj(i) { const p = projs[i]; scene.remove(p.mesh); p.mesh.material.dispose(); projs.splice(i, 1); }
+function clearProjs() { while (projs.length) removeProj(0); }
+function pearlLand(x, y, z) {
+  P.x = x; P.y = y; P.z = z; P.vx = P.vy = P.vz = 0;
+  let g = 0; while (bodyHit(P, P.x, P.y, P.z) && g++ < 6) P.y += 1;
+  P.peak = P.y; sfx(2500, 0.15, 0.5);
+  if (W.mode === 'survival') hurtPlayer(5, null, undefined, true);
+}
+function updateProjectiles(dt) {
+  for (let i = projs.length - 1; i >= 0; i--) {
+    const p = projs[i], sp = Math.hypot(p.vx, p.vy, p.vz), steps = Math.max(1, Math.ceil(sp * dt / 0.35)), h = dt / steps;
+    let done = false;
+    for (let s = 0; s < steps && !done; s++) {
+      const ox = p.x, oy = p.y, oz = p.z;
+      p.vy -= (p.kind === 'pearl' ? 22 : 12) * h;
+      p.x += p.vx * h; p.y += p.vy * h; p.z += p.vz * h;
+      const id = get(Math.floor(p.x), Math.floor(p.y), Math.floor(p.z));
+      if (id && !isFluid(id)) { if (p.kind === 'pearl') pearlLand(ox, oy, oz); done = true; break; }
+      for (const m of mobs) {
+        if (Math.abs(p.x - m.x) < m.w + 0.12 && Math.abs(p.z - m.z) < m.w + 0.12 && p.y > m.y - 0.1 && p.y < m.y + m.h) {
+          if (p.kind === 'arrow') { if (W.guest) netHitMob(m, 6); else damageMob(m, 6, true, P.x, P.z); }
+          else pearlLand(ox, oy, oz);
+          done = true; break;
+        }
+      }
+    }
+    p.life -= dt;
+    if (done || p.life <= 0 || p.y < -30) { removeProj(i); continue; }
+    p.mesh.position.set(p.x, p.y, p.z);
+    if (p.kind === 'arrow') p.mesh.lookAt(p.x + p.vx, p.y + p.vy, p.z + p.vz);
+  }
+}
+let bowReady = 0;
+function useItem2(s) {
+  if (s.id === I.EYE) return useEye(s);
+  if (s.id === I.PEARL) { spawnProj('pearl', 26); swing = 1; sfx(900, 0.1, 0.5); if (W.mode === 'survival') takeFromSlot(sel, 1); return; }
+  if (s.id === I.BOW) {
+    if (performance.now() < bowReady) return;
+    const ai = inv.findIndex(q => q && q.id === I.ARROW);
+    if (W.mode === 'survival' && ai < 0) { toast('You need arrows'); return; }
+    bowReady = performance.now() + 600; spawnProj('arrow', 40); swing = 1; sfx(1800, 0.08, 0.5);
+    if (W.mode === 'survival') takeFromSlot(ai, 1);
+  }
+}
+
 let hostileT = 0;
 function updateMobs(dt) {
   if (W && W.guest) { ghostMobs(dt); return; }
   hostileT += dt;
-  if (hostileT > 1.2) { hostileT = 0; trySpawnHostile(); trySpawnHostile(); }
+  const endOn = inEnd(P.x, P.z) || [...NET.players.values()].some(p => inEnd(p.tx, p.tz));
+  if (hostileT > 1.2) { hostileT = 0; if (inEnd(P.x, P.z)) trySpawnEnd(); else { trySpawnHostile(); trySpawnHostile(); } }
+  if (endOn && !W.dragonDead && !mobs.some(q => q.boss)) spawnMob('dragon', EX + 26, EY + 16, EZ);
   for (let i = mobs.length - 1; i >= 0; i--) {
     const m = mobs[i];
+    if (m.boss) { if (!endOn) removeMob(m); else updateMob(m, dt); continue; }
     const dx = m.x - P.x, dz = m.z - P.z, d2 = dx * dx + dz * dz;
     if (!getChunk(Math.floor(m.x) >> 4, Math.floor(m.z) >> 4) || d2 > 90 * 90 || (m.hostile && (W.diff === 'peaceful' || (d2 > 56 * 56)))) { removeMob(m); continue; }
     if (d2 > 70 * 70) continue;
@@ -2132,7 +2539,7 @@ function raycastMob(maxD) {
 
 /* ============================== interaction ============================== */
 const tmpV = new THREE.Vector3();
-function raycast(maxD) {
+function raycast(maxD, liq) {
   camera.getWorldDirection(tmpV);
   const o = camera.position, dX = tmpV.x, dY = tmpV.y, dZ = tmpV.z;
   let x = Math.floor(o.x), y = Math.floor(o.y), z = Math.floor(o.z);
@@ -2144,7 +2551,7 @@ function raycast(maxD) {
   let t = 0, fx = 0, fy = 0, fz = 0;
   for (let i = 0; i < 40 && t <= maxD; i++) {
     const id = get(x, y, z);
-    if (id && id !== B.WATER) return { x, y, z, fx, fy, fz, id, d: t };
+    if (id && (liq || !isFluid(id))) return { x, y, z, fx, fy, fz, id, d: t };
     if (tmx < tmy && tmx < tmz) { x += sx; t = tmx; tmx += tdx; fx = -sx; fy = 0; fz = 0; }
     else if (tmy < tmz) { y += sy; t = tmy; tmy += tdy; fx = 0; fy = -sy; fz = 0; }
     else { z += sz; t = tmz; tmz += tdz; fx = 0; fy = 0; fz = -sz; }
@@ -2249,7 +2656,7 @@ function placeBlock() {
   const s = inv[sel]; if (!s || s.id >= 100) return;
   const x = target.x + target.fx, y = target.y + target.fy, z = target.z + target.fz;
   if (y < 0 || y >= WH) return;
-  const cur = get(x, y, z); if (cur && cur !== B.WATER) return;
+  const cur = get(x, y, z); if (cur && !isFluid(cur)) return;
   const w = P.w;
   if (DEF[s.id].solid && x + 1 > P.x - w && x < P.x + w && z + 1 > P.z - w && z < P.z + w && y + 1 > P.y && y < P.y + P.h) return;
   setBlock(x, y, z, s.id); sfx(700, 0.1, 0.45); swing = 1;
@@ -2275,6 +2682,33 @@ function trySleep(t) {
   }
   sleep = { t: 0, done: false, bed: [t.x, t.y, t.z] };
   mL = mR = false; swing = 1;
+}
+function useItem(s) {
+  const id = s.id;
+  if (id === I.BUCKET || id === I.WBUCKET || id === I.LBUCKET) return useBucket(s);
+  if (ARMOR[id]) return equipArmor(s);
+  if (typeof useItem2 === 'function') return useItem2(s);
+}
+function useBucket(s) {
+  const t = target; if (!t) return;
+  const surv = W.mode === 'survival';
+  if (s.id === I.BUCKET) {
+    if (t.id !== B.WATER && t.id !== B.LAVA) return;
+    setBlock(t.x, t.y, t.z, 0); swing = 1; sfx(900, 0.12, 0.5);
+    if (surv) { inv[sel] = { id: t.id === B.WATER ? I.WBUCKET : I.LBUCKET, n: 1 }; invChanged(); }
+    return;
+  }
+  const fluid = s.id === I.WBUCKET ? B.WATER : B.LAVA;
+  const spend = () => { if (surv) { inv[sel] = { id: I.BUCKET, n: 1 }; invChanged(); } };
+  if (t.id === B.WATER || t.id === B.LAVA) {
+    if (t.id !== fluid) { setBlock(t.x, t.y, t.z, B.OBSIDIAN); swing = 1; sfx(1200, 0.2, 0.6); spend(); toast('Obsidian!'); }
+    return;
+  }
+  const x = t.x + t.fx, y = t.y + t.fy, z = t.z + t.fz;
+  if (y < 0 || y >= WH) return;
+  const cur = get(x, y, z);
+  if (cur && !isFluid(cur)) return;
+  setBlock(x, y, z, cur && cur !== fluid ? B.OBSIDIAN : fluid); swing = 1; sfx(900, 0.12, 0.5); spend();
 }
 function useEgg(s) {
   if (!target) return;
@@ -2312,6 +2746,7 @@ canvas.addEventListener('mousedown', e => {
     const s = inv[sel];
     if (s && s.id < 100) placeBlock();
     else if (s && ITEMS[s.id] && ITEMS[s.id].egg) useEgg(s);
+    else if (s) useItem(s);
   } else if (e.button === 1 && target) {
     e.preventDefault();
     if (W.mode === 'creative') {
@@ -2381,7 +2816,7 @@ const normName = s => s.toLowerCase().replace(/^minecraft:/, '').replace(/[^a-z0
 const ITEM_MAP = {}, ITEM_KEYS = [];
 (function buildItemMap() {
   const ids = [];
-  for (let id = 1; id < DEF.length; id++) if (id !== B.WATER && id !== B.FURNACE_ON) ids.push(id);
+  for (let id = 1; id < DEF.length; id++) if (id !== B.WATER && id !== B.FURNACE_ON) ids.push(id);   // (lava/portal can be /give'n as blocks too)
   ids.push(100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, ...TOOL_IDS, 200, 201, 202, 203);
   for (const id of ids) { const k = normName(infoOf(id).n); ITEM_MAP[k] = id; ITEM_KEYS.push(k); }
   Object.assign(ITEM_MAP, { grass: B.GRASS, log: B.LOG, leaves: B.LEAVES, planks: B.PLANKS, cobble: B.COBBLE, brick: B.BRICK,
@@ -2579,7 +3014,7 @@ function runCommand(line) {
     }
     case 'summon': {
       const t = normName(parts[0] || '');
-      if (!['pig', 'cow', 'sheep', 'zombie'].includes(t)) return bad('Usage: /summon <pig|cow|sheep|zombie>');
+      if (!['pig', 'cow', 'sheep', 'zombie', 'enderman'].includes(t)) return bad('Usage: /summon <pig|cow|sheep|zombie|enderman>');
       if (t === 'zombie' && W.diff === 'peaceful') return bad('Hostile mobs cannot spawn on Peaceful');
       const x = P.x - Math.sin(P.yaw) * 3, z = P.z - Math.cos(P.yaw) * 3;
       const m = spawnMob(t, x, Math.max(1, getHeight(Math.floor(x), Math.floor(z)) + 1.02), z);
@@ -2654,6 +3089,7 @@ async function saveWorld() {
   W.inv = inv.map(s => s ? [s.id, s.n, s.d || 0] : 0);
   W.furnaces = [...furnaces.values()].map(f => ({ pos: f.pos, s: f.s.map(q => q ? [q.id, q.n, q.d || 0] : 0), burn: f.burn, burnMax: f.burnMax, cook: f.cook }));
   W.stats = { hp: stats.hp, food: stats.food };
+  W.armor = armor.map(a => a ? [a.id, a.d || 0] : 0);
   W.tod = tod; W.played = Date.now();
   const dirty = [];
   for (const c of chunks.values()) if (c.saveDirty) { dirty.push(c); c.saveDirty = false; }
@@ -2809,13 +3245,14 @@ async function enterWorld(rec, mp) {
   camMode = 0;
   showScreen('loading'); $('loadtxt').textContent = 'LOADING WORLD...';
   await new Promise(r => setTimeout(r, 40));
-  clearWorld(); W = rec; SEED = rec.seed | 0; VMODE = rec.vill || 'off'; vcache.clear(); invalidate();
+  clearWorld(); clearProjs(); W = rec; SEED = rec.seed | 0; VMODE = rec.vill || 'off'; vcache.clear(); invalidate();
   savedChunks = mp ? mp.chunks : await DB.chunks(rec.id);
   if (mp) for (const [k, l] of mp.pend) pendingEdits.set(k, l);
   const pl = mp ? { x: mp.pos[0], y: mp.pos[1], z: mp.pos[2], yaw: 0.6, pitch: -0.12 } : rec.player;
   inv = new Array(36).fill(null);
   if (rec.inv) rec.inv.forEach((s, i) => { if (s) { inv[i] = { id: s[0], n: s[1] }; if (s[2]) inv[i].d = s[2]; } });
   else if (rec.mode === 'creative') CREATIVE_HOTBAR.forEach((id, i) => inv[i] = { id, n: 64 });
+  armor.fill(null); (rec.armor || []).forEach((a, i) => { if (a && ARMOR[a[0]]) armor[i] = { id: a[0], n: 1, d: a[1] || 0 }; }); drawArmor();
   (rec.furnaces || []).forEach(r => furnaces.set(r.pos.join(','), {
     pos: r.pos, s: r.s.map(q => q ? (q[2] ? { id: q[0], n: q[1], d: q[2] } : { id: q[0], n: q[1] }) : null),
     burn: r.burn || 0, burnMax: r.burnMax || 0, cook: r.cook || 0, dirty: false }));
@@ -3059,7 +3496,7 @@ $('skin-user').onkeydown = e => { if (e.key === 'Enter') $('b-skin-web').click()
 // positions, chat and mob positions travel over the data channels (the host relays between guests).
 const PEER_PREFIX = 'blockcraft-', PEER_OPTS = window.BC_PEER_OPTS || {};
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const MOB_TYPES = ['pig', 'cow', 'sheep', 'zombie'];
+const MOB_TYPES = ['pig', 'cow', 'sheep', 'zombie', 'enderman', 'dragon'];
 const r2 = v => Math.round(v * 100) / 100;
 const randCode = () => { let s = ''; for (let i = 0; i < 5; i++) s += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]; return s; };
 const MAX_GUESTS = 7;
@@ -3239,7 +3676,9 @@ function ghostMobs(dt) {
     const sw = moving ? Math.sin(m.phase) * 0.8 : 0;
     m.legs.forEach((l, i) => l.rotation.x = (i % 2 === (m.legs.length === 4 && i > 1 ? 1 : 0) ? 1 : -1) * sw);
     if (m.hostile) m.arms.forEach((a, i) => a.rotation.x = -1.45 + (i ? -1 : 1) * sw * 0.15);
+  else if (m.ender) m.arms.forEach((a, i) => a.rotation.x = (m.angry ? -0.9 : 0) + (i ? -1 : 1) * sw * 0.4);
     m.flash = Math.max(0, m.flash - dt);
+    if (m.boss) { m.t = (m.t || 0) + dt; const wf = Math.sin(m.t * 3.2) * 0.55; m.wings.forEach((wg, i) => wg.rotation.z = (i ? -1 : 1) * wf); }
     m.group.position.set(m.x, m.y, m.z); m.group.rotation.y = m.yaw;
     const fl = m.flash > 0 ? 0.65 : 0; m.mats.forEach(q => q.emissive.setRGB(fl, 0, 0));
   }
@@ -3475,7 +3914,7 @@ function hostExecFor(id, d) {
     }
     case 'summon': {
       const ty = normName(parts[0] || '');
-      if (!MOB_TYPES.includes(ty)) return reply('Usage: /summon <pig|cow|sheep|zombie>', true);
+      if (!MOB_TYPES.includes(ty) || ty === 'dragon') return reply('Usage: /summon <pig|cow|sheep|zombie|enderman>', true);
       if (ty === 'zombie' && W.diff === 'peaceful') return reply('Hostile mobs cannot spawn on Peaceful', true);
       const px = (d.pos && +d.pos[0]) || P.x, pz = (d.pos && +d.pos[2]) || P.z, yw = +d.yaw || 0;
       const x = px - Math.sin(yw) * 3, z = pz - Math.cos(yw) * 3;
@@ -3692,7 +4131,7 @@ let last = performance.now(), fpsT = 0, fpsN = 0, fps = 0, hudT = 0, unloadT = 0
 function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.05, (now - last) / 1000); last = now; gtime += dt;
-  netTick(dt); updateSelf(dt);
+  netTick(dt); updateSelf(dt); updateBossBar();
   if (skinScreen.classList.contains('on')) renderSkinPreview(dt);
   fpsT += dt; fpsN++; if (fpsT >= 0.5) { fps = Math.round(fpsN / fpsT); fpsT = 0; fpsN = 0; }
 
@@ -3710,7 +4149,7 @@ function frame(now) {
     if (sim) {
       tod = (tod + dt / 720) % 1;
       updatePlayer(dt, state === 'playing' && !sleep);
-      updateStats(dt); updateMobs(dt); updateDrops(dt); updateFurnaces(dt);
+      updateStats(dt); updateMobs(dt); updateDrops(dt); updateProjectiles(dt); updateFurnaces(dt);
       if (state === 'inventory' && curFurnace) updateFurnaceUI();
     } else {
       camera.position.set(P.x, P.y + P.eye, P.z); camera.rotation.set(P.pitch, P.yaw, 0);
@@ -3718,7 +4157,7 @@ function frame(now) {
     updateChunks(7, P.x, P.z);
     unloadT += dt; if (unloadT > 1.5) { unloadT = 0; unloadFar(P.x, P.z); }
     if (state === 'playing') {
-      target = raycast(5.5);
+      { const hs = inv[sel]; target = raycast(5.5, !!hs && (hs.id === I.BUCKET || hs.id === I.WBUCKET || hs.id === I.LBUCKET)); }
       const mt = raycastMob(4.2);
       mobTarget = mt && (!target || mt.t < target.d) ? mt : null;
       if (mobTarget) target = null;
@@ -3759,7 +4198,7 @@ function frame(now) {
       hud.textContent = `Blockcraft   ${fps} fps\nXYZ ${P.x.toFixed(1)} ${P.y.toFixed(1)} ${P.z.toFixed(1)}\nChunks ${chunks.size}   Mobs ${mobs.length}   Time ${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}\n${W ? W.name + ' · ' + W.mode + ' · ' + W.diff : ''}${P.fly ? '   FLYING' : ''}`;
     }
   }
-  underEl.style.display = underwater ? 'block' : 'none';
+  underEl.style.display = underwater ? 'block' : 'none'; underEl.style.background = underLava ? 'rgba(255,90,10,.62)' : '';
   camThirdPerson();
   renderer.render(scene, camera);
   if (hand.visible || armG.visible) {   // second pass: held item, depth-sorted on its own so faces never bleed through each other
