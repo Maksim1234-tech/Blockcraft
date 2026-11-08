@@ -3175,7 +3175,7 @@ function updateArm(sw, bob) {
   armG.visible = show; if (!show) return;
   const k = SKIN.name + '|' + SKIN.slim;
   if (!armParts || armKey !== k || armParts.tex.image !== SKIN.canvas) { buildArm(); armKey = k; }
-  armG.position.set(0.5 - sw * 0.14, -0.58 - sw * 0.1 + bob, 0.1 - sw * 0.2);
+  armG.position.set(0.28 - sw * 0.1, -0.12 - sw * 0.12 + bob, 0.1 - sw * 0.2);
   armG.rotation.set(1.25 - sw * 0.5, -0.45, 0.12);
   armG.scale.setScalar(1.15);
 }
