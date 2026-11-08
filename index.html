@@ -272,7 +272,7 @@ body.menu #chatlog{display:none}
     <div class="row">Volume <input type="range" id="set-vol" min="0" max="100"><span id="v-vol"></span></div>
     <div class="row">Username <input type="text" id="set-name" maxlength="16" placeholder="Player"></div>
     <div class="row">Clouds <input type="checkbox" id="set-clouds"></div>
-    <div class="row">Shaders <select id="set-shaders"><option value="0">Off</option><option value="1">Fancy (bloom, colour grading)</option><option value="2">Ultra (+ light shafts, water ripple)</option></select></div>
+    <div class="row">Shaders <select id="set-shaders"><option value="0">Off</option><option value="1">Fancy (ambient occlusion, bloom, waving leaves and water)</option><option value="2">Ultra (+ sun shadows, light shafts, haze, reflections)</option></select></div>
     <div class="row">Controls <select id="set-controls"><option value="auto">Auto-detect</option><option value="touch">Touch (mobile)</option><option value="kbm">Keyboard + mouse</option></select></div>
     <div class="row">Debug info (F4) <input type="checkbox" id="set-debug"></div>
     <button class="alt" id="saveatlas">Save texture atlas (PNG)</button>
@@ -983,15 +983,44 @@ atlasTex.generateMipmaps = true;
 const matOpaque = new THREE.MeshBasicMaterial({ map: atlasTex, vertexColors: true, alphaTest: 0.5 });
 const matTrans  = new THREE.MeshBasicMaterial({ map: atlasTex, vertexColors: true, transparent: true, depthWrite: false });
 // lamp light is a second per-vertex value that ignores the day/night dimming: final = max(skylit colour, texel * blockLight)
+const SHU = { uTime: { value: 0 }, uWave: { value: 0 }, uShine: { value: 0 }, uDay: { value: 1 }, uSkyCol: { value: new THREE.Color(0.5, 0.7, 1) }, uSunCol: { value: new THREE.Color(1, 0.93, 0.8) } };
 for (const mt of [matOpaque, matTrans]) mt.onBeforeCompile = sh => {
-  sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute float blk;\nvarying float vBlk;')
-    .replace('#include <color_vertex>', '#include <color_vertex>\nvBlk = blk;');
-  sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying float vBlk;')
+  Object.assign(sh.uniforms, SHU);
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', '#include <common>\nattribute float blk;\nattribute float kind;\nuniform float uTime;\nuniform float uWave;\nvarying float vBlk;\nvarying float vKind;\nvarying vec3 vWP;')
+    .replace('#include <color_vertex>', '#include <color_vertex>\nvBlk = blk; vKind = kind;')
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+    vWP = position;
+    if (uWave > 0.0) {
+      if (kind > 0.5 && kind < 1.5) {          // leaves sway in the wind
+        transformed.x += sin(uTime*1.7 + position.x*1.1 + position.y*0.7) * 0.05 * uWave;
+        transformed.z += cos(uTime*1.45 + position.z*1.2 + position.y*0.6) * 0.05 * uWave;
+        transformed.y += sin(uTime*2.1 + position.x + position.z) * 0.02 * uWave;
+      } else if (kind > 1.5 && kind < 2.5) {   // water ripples
+        transformed.y += (sin(uTime*1.9 + position.x*2.3 + position.z*1.7) + sin(uTime*1.3 - position.x*1.7 + position.z*2.9)) * 0.022 * uWave;
+      } else if (kind > 2.5) {                 // lava heaves slowly
+        transformed.y += sin(uTime*0.9 + position.x*1.6 + position.z*1.9) * 0.03 * uWave;
+      }
+    }`);
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', '#include <common>\nvarying float vBlk;\nvarying float vKind;\nvarying vec3 vWP;\nuniform float uTime;\nuniform float uShine;\nuniform float uDay;\nuniform vec3 uSkyCol;\nuniform vec3 uSunCol;')
     .replace('#include <color_fragment>', `#ifdef USE_COLOR
     vec3 skyPart = diffuseColor.rgb * vColor;
     vec3 texel = diffuseColor.rgb / max(diffuse, vec3(0.001));
     diffuseColor.rgb = max(skyPart, texel * vBlk * vec3(1.0, 0.88, 0.66));
-  #endif`);
+  #endif
+  if (uShine > 0.0) {
+    if (vKind > 1.5 && vKind < 2.5) {          // water: sky reflection at grazing angles + sun glitter
+      vec3 vd = normalize(cameraPosition - vWP);
+      float fr = pow(1.0 - clamp(abs(vd.y), 0.0, 1.0), 3.0);
+      float rip = sin(vWP.x*5.0 + uTime*1.6) * sin(vWP.z*4.3 - uTime*1.3);
+      float glit = pow(max(rip, 0.0), 18.0);
+      diffuseColor.rgb = mix(diffuseColor.rgb, uSkyCol * 1.05, fr * 0.5 * uShine) + uSunCol * glit * 0.5 * uShine * uDay;
+      diffuseColor.a = min(1.0, diffuseColor.a + fr * 0.2);
+    } else if (vKind > 2.5) {                  // lava: slow glowing pulses
+      diffuseColor.rgb *= 1.0 + 0.2 * sin(vWP.x*3.0 + vWP.z*2.7 + uTime*1.5);
+    }
+  }`);
 };
 
 /* ============================== game state ============================== */
@@ -1268,7 +1297,7 @@ function chunkBlockLight(ch) {
 const isOp = (x, y, z) => { const id = get(x, y, z); return id !== 0 && DEF[id].opaque ? 1 : 0; };
 
 function meshChunk(ch) {
-  const O = { p: [], u: [], c: [], l: [], i: [] }, T = { p: [], u: [], c: [], l: [], i: [] };
+  const O = { p: [], u: [], c: [], l: [], i: [], k: [] }, T = { p: [], u: [], c: [], l: [], i: [], k: [] };
   const bl = chunkBlockLight(ch), BW = CS + 2;
   const x0 = ch.cx * CS, z0 = ch.cz * CS, ymax = Math.min(WH - 1, ch.top + 1);
   const ao = [0, 0, 0, 0];
@@ -1276,7 +1305,7 @@ function meshChunk(ch) {
     const id = ch.data[(y * CS + z) * CS + x];
     if (!id) continue;
     const d = DEF[id], wx = x0 + x, wz = z0 + z;
-    const buf = (d.liquid || d.glass) ? T : O;
+    const buf = (d.liquid || d.glass) ? T : O, kd = id === B.LEAVES ? 1 : id === B.WATER ? 2 : id === B.LAVA ? 3 : 0;
     for (let f = 0; f < 6; f++) {
       const F = FACES[f], dx = F.dir[0], dy = F.dir[1], dz = F.dir[2];
       const nx = wx + dx, ny = y + dy, nz = wz + dz;
@@ -1318,6 +1347,7 @@ function meshChunk(ch) {
         const s = d.lamp ? 1 : SHADE[f] * light * AOV[ao[k]];
         buf.c.push(s, s, s);
         buf.l.push(d.lamp ? 1 : blkF * (0.62 + 0.38 * ao[k] / 3));
+        buf.k.push(kd);
       }
       if (ao[0] + ao[3] < ao[1] + ao[2]) buf.i.push(base, base + 1, base + 3, base, base + 3, base + 2);
       else buf.i.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
@@ -1335,6 +1365,7 @@ function applyMesh(ch, key, buf, mat, order) {
   g.setAttribute('uv', new THREE.Float32BufferAttribute(buf.u, 2));
   g.setAttribute('color', new THREE.Float32BufferAttribute(buf.c, 3));
   g.setAttribute('blk', new THREE.Float32BufferAttribute(buf.l, 1));
+  g.setAttribute('kind', new THREE.Float32BufferAttribute(buf.k, 1));
   g.setIndex(buf.i);
   const m = new THREE.Mesh(g, mat);
   m.matrixAutoUpdate = false; m.renderOrder = order;
@@ -4339,45 +4370,175 @@ const FINAL_FS = [
   '  vec2 q = vUv - .5; c *= 1.0 - dot(q, q) * .85;',
   '  gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);',
   '}'].join('\n');
+const DEPTH_COMMON = [
+  'uniform sampler2D tDepth; uniform vec2 res; uniform vec2 tanHalf; uniform float near; uniform float far;',
+  'float lin(float d){ return 2.0*near*far/(far+near-(2.0*d-1.0)*(far-near)); }',
+  'vec3 posAt(vec2 uv){ float z = lin(texture2D(tDepth, uv).r); return vec3((uv*2.0-1.0)*tanHalf*z, -z); }',
+  'float ign(vec2 p){ return fract(52.9829189*fract(dot(p, vec2(.06711056,.00583715)))); }'].join('\n');
+const AO_FS = 'varying vec2 vUv; uniform float shadowOn; uniform vec3 sunV;\n' + DEPTH_COMMON + `
+void main(){
+  float d0 = texture2D(tDepth, vUv).r;
+  if (d0 >= .99999) { gl_FragColor = vec4(1.0); return; }
+  vec2 px = 1.0/res;
+  vec3 P = posAt(vUv);
+  vec3 Pr = posAt(vUv+vec2(px.x,0.0)), Pl = posAt(vUv-vec2(px.x,0.0)), Pu = posAt(vUv+vec2(0.0,px.y)), Pd = posAt(vUv-vec2(0.0,px.y));
+  vec3 dx = abs(Pr.z-P.z) < abs(Pl.z-P.z) ? Pr-P : P-Pl;
+  vec3 dy = abs(Pu.z-P.z) < abs(Pd.z-P.z) ? Pu-P : P-Pd;
+  vec3 N = normalize(cross(dx, dy)); if (N.z < 0.0) N = -N;
+  float zc = -P.z, ang = ign(gl_FragCoord.xy) * 6.2831853, occ = 0.0;
+  for (int i = 0; i < 10; i++) {
+    float fi = float(i), a = ang + fi*2.39996, r = (fi + 0.5)/10.0;
+    vec2 uvo = vec2(cos(a), sin(a)) * r * 0.8 / (2.0 * tanHalf * zc);
+    vec3 v = posAt(vUv + uvo) - P; float dist = length(v) + 1e-4;
+    occ += max(0.0, dot(N, v)/dist - 0.2) * (1.0 - smoothstep(0.5, 1.4, dist));
+  }
+  float ao = clamp(1.0 - occ/10.0*2.2, 0.0, 1.0);
+  float sh = 1.0;
+  if (shadowOn > 0.5) {
+    float jit = ign(gl_FragCoord.xy + 17.0);
+    for (int i = 1; i <= 12; i++) {
+      float t = (float(i) - 1.0 + jit) / 12.0 * 4.0 + 0.1;
+      vec3 S = P + sunV * t + N * 0.04;
+      if (S.z > -0.05) break;
+      vec2 suv = (S.xy / -S.z) / tanHalf * 0.5 + 0.5;
+      if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) break;
+      float df = -S.z - lin(texture2D(tDepth, suv).r);
+      if (df > 0.1 && df < 1.0) { sh = 0.0; break; }
+    }
+  }
+  gl_FragColor = vec4(ao, sh, 0.0, 1.0);
+}`;
+const RAYS_FS = `varying vec2 vUv; uniform sampler2D tScene; uniform sampler2D tDepth; uniform vec2 sunPos; uniform float aspect; uniform float sunVis;
+void main(){
+  float d = texture2D(tDepth, vUv).r; vec3 c = texture2D(tScene, vUv).rgb;
+  float sky = step(.99999, d);
+  vec2 q = (vUv - sunPos) * vec2(aspect, 1.0);
+  float halo = exp(-dot(q, q) * 14.0) * sunVis;
+  float l = dot(c, vec3(.299,.587,.114));
+  gl_FragColor = vec4(sky * (c * smoothstep(.6, 1.0, l) * 1.2 + vec3(1.0,.88,.65) * halo * 1.1), 1.0);
+}`;
+const FINAL2_FS = 'varying vec2 vUv; uniform sampler2D tScene; uniform sampler2D tAO; uniform sampler2D tBloom; uniform sampler2D tRays;\n' +
+  'uniform vec2 sunPos; uniform float time, bloom, raysAmt, uw, dayK, sunVis, aoAmt, shadowAmt, hazeAmt, grain, dusk; uniform vec3 hazeCol, sunCol, sunV;\n' + DEPTH_COMMON + `
+float luma(vec3 c){ return dot(c, vec3(.299,.587,.114)); }
+void main(){
+  vec2 uv = vUv;
+  if (uw > .5) uv += vec2(sin(uv.y*24.0 + time*2.2), cos(uv.x*28.0 + time*1.9)) * .0035;
+  vec2 px = 1.0/res;
+  float d0 = texture2D(tDepth, uv).r, z0 = lin(d0);
+  vec3 c = texture2D(tScene, uv).rgb;
+  float zl = lin(texture2D(tDepth, uv - vec2(px.x,0.0)).r), zr = lin(texture2D(tDepth, uv + vec2(px.x,0.0)).r);
+  float zu = lin(texture2D(tDepth, uv + vec2(0.0,px.y)).r), zd = lin(texture2D(tDepth, uv - vec2(0.0,px.y)).r);
+  float e = max(max(abs(zl-z0), abs(zr-z0)), max(abs(zu-z0), abs(zd-z0))) / z0;
+  if (e > .05) c = (c*2.0 + texture2D(tScene, uv - vec2(px.x,0.0)).rgb + texture2D(tScene, uv + vec2(px.x,0.0)).rgb + texture2D(tScene, uv + vec2(0.0,px.y)).rgb + texture2D(tScene, uv - vec2(0.0,px.y)).rgb) / 6.0;
+  if (d0 < .99999) {
+    vec2 ao = texture2D(tAO, uv).rg;
+    c *= mix(1.0, ao.x, aoAmt);
+    c *= mix(1.0, mix(.55, 1.0, ao.y), shadowAmt);
+    vec3 vd = normalize(vec3((uv*2.0-1.0)*tanHalf, -1.0));
+    float sc = pow(max(dot(vd, sunV), 0.0), 6.0);
+    float h = 1.0 - exp(-z0 * hazeAmt);
+    c = mix(c, mix(hazeCol, sunCol, sc*.55), h * .55);
+  }
+  c += texture2D(tBloom, uv).rgb * bloom;
+  if (raysAmt > 0.0 && sunVis > 0.0) {
+    vec2 d = (sunPos - uv) * .045; vec2 p = uv; vec3 acc = vec3(0.0); float w = 1.0;
+    for (int i = 0; i < 28; i++) { p += d; acc += texture2D(tRays, p).rgb * w; w *= .94; }
+    c += acc / 28.0 * raysAmt * sunVis * sunCol;
+  }
+  c *= 1.04;
+  vec3 hi = max(c - .7, 0.0); c = min(c, vec3(.7)) + .3*(1.0 - exp(-hi/.3));
+  vec3 cc = clamp(c, 0.0, 1.0); c = mix(c, cc*cc*(3.0 - 2.0*cc), .22);
+  float l = luma(c); c = mix(vec3(l), c, 1.16);
+  c *= mix(vec3(.93,.97,1.06), vec3(1.05,1.02,.95), dayK);
+  c += vec3(.10,.035,0.0) * dusk * .5 * l;
+  vec2 q = vUv - .5; c *= 1.0 - dot(q, q) * .85;
+  c += (ign(gl_FragCoord.xy + time*61.0) - .5) * grain;
+  gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+}`;
 function postInit() {
   post.scene = new THREE.Scene(); post.cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   post.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), null); post.quad.frustumCulled = false; post.scene.add(post.quad);
   const mk = (fs, u) => new THREE.ShaderMaterial({ vertexShader: POST_VS, fragmentShader: fs, uniforms: u, depthTest: false, depthWrite: false });
-  post.bright = mk(BRIGHT_FS, { tScene: { value: null }, thr: { value: 0.8 } });
-  post.blur = mk(BLUR_FS, { tMap: { value: null }, dir: { value: new THREE.Vector2() } });
-  post.final = mk(FINAL_FS, { tScene: { value: null }, tBloom: { value: null }, time: { value: 0 }, bloom: { value: 0.4 }, rays: { value: 0 }, uw: { value: 0 }, dayK: { value: 1 }, sunVis: { value: 0 }, sunPos: { value: new THREE.Vector2(0.5, 0.5) } });
-  post.ms = !!(renderer.capabilities.isWebGL2 && THREE.WebGLMultisampleRenderTarget);
+  const V2 = () => ({ value: new THREE.Vector2() }), V3 = () => ({ value: new THREE.Vector3() }), F = v => ({ value: v }), T = () => ({ value: null });
+  post.bright = mk(BRIGHT_FS, { tScene: T(), thr: F(0.8) });
+  post.blur = mk(BLUR_FS, { tMap: T(), dir: V2() });
+  post.final = mk(FINAL_FS, { tScene: T(), tBloom: T(), time: F(0), bloom: F(0.4), rays: F(0), uw: F(0), dayK: F(1), sunVis: F(0), sunPos: V2() });
+  post.depth = !!(renderer.capabilities.isWebGL2 || renderer.extensions.has('WEBGL_depth_texture'));
+  post.ms = !post.depth && !!(renderer.capabilities.isWebGL2 && THREE.WebGLMultisampleRenderTarget);
+  if (post.depth) {
+    post.aoM = mk(AO_FS, { tDepth: T(), res: V2(), tanHalf: V2(), near: F(0.05), far: F(1600), shadowOn: F(0), sunV: V3() });
+    post.raysM = mk(RAYS_FS, { tScene: T(), tDepth: T(), sunPos: V2(), aspect: F(1), sunVis: F(0) });
+    post.final2 = mk(FINAL2_FS, { tScene: T(), tDepth: T(), tAO: T(), tBloom: T(), tRays: T(), res: V2(), tanHalf: V2(), near: F(0.05), far: F(1600), sunPos: V2(),
+      time: F(0), bloom: F(0.4), raysAmt: F(0), uw: F(0), dayK: F(1), sunVis: F(0), aoAmt: F(0.8), shadowAmt: F(0), hazeAmt: F(0.005), grain: F(0), dusk: F(0),
+      hazeCol: V3(), sunCol: V3(), sunV: V3() });
+  }
   post.ok = true;
 }
 function postSize() {
   const sz = renderer.getDrawingBufferSize(new THREE.Vector2()), w = Math.max(2, sz.x | 0), h = Math.max(2, sz.y | 0);
   if (post.rt && post.w === w && post.h === h) return;
   post.w = w; post.h = h;
-  [post.rt, post.a, post.b].forEach(t => t && t.dispose());
+  if (post.rt && post.rt.depthTexture) post.rt.depthTexture.dispose();
+  [post.rt, post.a, post.b, post.ao1, post.ao2, post.r].forEach(t => t && t.dispose());
   const o = { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat };
-  post.rt = post.ms ? new THREE.WebGLMultisampleRenderTarget(w, h, o) : new THREE.WebGLRenderTarget(w, h, o);
-  const o2 = Object.assign({ depthBuffer: false, stencilBuffer: false }, o), qw = Math.max(1, w >> 2), qh = Math.max(1, h >> 2);
-  post.a = new THREE.WebGLRenderTarget(qw, qh, o2); post.b = new THREE.WebGLRenderTarget(qw, qh, o2);
+  if (post.depth) {
+    post.rt = new THREE.WebGLRenderTarget(w, h, o);
+    post.rt.depthTexture = new THREE.DepthTexture(w, h, THREE.UnsignedIntType);
+    post.rt.depthTexture.minFilter = post.rt.depthTexture.magFilter = THREE.NearestFilter;
+  } else post.rt = post.ms ? new THREE.WebGLMultisampleRenderTarget(w, h, o) : new THREE.WebGLRenderTarget(w, h, o);
+  const o2 = Object.assign({ depthBuffer: false, stencilBuffer: false }, o), qw = Math.max(1, w >> 2), qh = Math.max(1, h >> 2), hw = Math.max(1, w >> 1), hh = Math.max(1, h >> 1);
+  post.a = new THREE.WebGLRenderTarget(qw, qh, o2); post.b = new THREE.WebGLRenderTarget(qw, qh, o2); post.r = new THREE.WebGLRenderTarget(qw, qh, o2);
+  post.ao1 = new THREE.WebGLRenderTarget(hw, hh, o2); post.ao2 = new THREE.WebGLRenderTarget(hw, hh, o2);
 }
 function postPass(mat, target) { post.quad.material = mat; renderer.setRenderTarget(target); renderer.render(post.scene, post.cam); }
+const sunV = new THREE.Vector3(), sunColU = new THREE.Color();
 function renderScene() {
   const lvl = S.shaders | 0;
+  SHU.uTime.value = performance.now() / 1000; SHU.uWave.value = (lvl && !post.broken) ? 1 : 0; SHU.uShine.value = (lvl && !post.broken) ? (lvl > 1 ? 1 : 0.6) : 0;
+  SHU.uDay.value = Math.max(0, Math.min(1, dayF)); SHU.uSkyCol.value.copy(skyCol);
   if (!lvl || post.broken) { renderer.render(scene, camera); return; }
   try {
     if (!post.ok) postInit();
     postSize();
     renderer.setRenderTarget(post.rt); renderer.render(scene, camera);
     post.bright.uniforms.tScene.value = post.rt.texture; post.bright.uniforms.thr.value = lvl > 1 ? 0.7 : 0.8; postPass(post.bright, post.a);
-    for (let i = 0; i < (lvl > 1 ? 2 : 1); i++) {
-      post.blur.uniforms.tMap.value = post.a.texture; post.blur.uniforms.dir.value.set(1 / post.a.width, 0); postPass(post.blur, post.b);
-      post.blur.uniforms.tMap.value = post.b.texture; post.blur.uniforms.dir.value.set(0, 1 / post.a.height); postPass(post.blur, post.a);
-    }
-    const u = post.final.uniforms;
+    const blur = (src, tmp, dst, w, h) => {
+      post.blur.uniforms.tMap.value = src.texture; post.blur.uniforms.dir.value.set(1 / w, 0); postPass(post.blur, tmp);
+      post.blur.uniforms.tMap.value = tmp.texture; post.blur.uniforms.dir.value.set(0, 1 / h); postPass(post.blur, dst);
+    };
+    for (let i = 0; i < (lvl > 1 ? 2 : 1); i++) blur(post.a, post.b, post.a, post.a.width, post.a.height);
     sunTmp.copy(camera.position).addScaledVector(sunDir, 800).project(camera);
-    u.tScene.value = post.rt.texture; u.tBloom.value = post.a.texture; u.time.value = performance.now() / 1000;
-    u.bloom.value = lvl > 1 ? 0.8 : 0.45; u.rays.value = lvl > 1 ? 0.6 : 0; u.uw.value = (underwater && lvl > 1) ? 1 : 0; u.dayK.value = Math.max(0.15, dayF);
-    u.sunPos.value.set(sunTmp.x * 0.5 + 0.5, sunTmp.y * 0.5 + 0.5); u.sunVis.value = (sunTmp.z < 1 && sun.visible && !underwater) ? 1 : 0;
-    postPass(post.final, null);
+    const sunOn = sunTmp.z < 1 && sun.visible && !underwater, dusk = Math.max(0, 1 - Math.abs(sunDir.y) / 0.32) * 0.65;
+    const tt = performance.now() / 1000, sx = sunTmp.x * 0.5 + 0.5, sy = sunTmp.y * 0.5 + 0.5;
+    if (!post.depth) {
+      const u = post.final.uniforms;
+      u.tScene.value = post.rt.texture; u.tBloom.value = post.a.texture; u.time.value = tt;
+      u.bloom.value = lvl > 1 ? 0.8 : 0.45; u.rays.value = lvl > 1 ? 0.6 : 0; u.uw.value = (underwater && lvl > 1) ? 1 : 0; u.dayK.value = Math.max(0.15, dayF);
+      u.sunPos.value.set(sx, sy); u.sunVis.value = sunOn ? 1 : 0;
+      postPass(post.final, null); return;
+    }
+    const tanY = Math.tan(camera.fov * Math.PI / 360), tan2 = [tanY * camera.aspect, tanY];
+    sunV.copy(sunDir).transformDirection(camera.matrixWorldInverse);
+    sunColU.setRGB(1, 0.93 - dusk * 0.3, 0.8 - dusk * 0.45);
+    // ambient occlusion + sun contact shadows (half resolution, blurred)
+    const a = post.aoM.uniforms;
+    a.tDepth.value = post.rt.depthTexture; a.res.value.set(post.ao1.width, post.ao1.height); a.tanHalf.value.set(tan2[0], tan2[1]);
+    a.near.value = camera.near; a.far.value = camera.far; a.shadowOn.value = (lvl > 1 && sun.visible && sunDir.y > 0.04 && !underwater) ? 1 : 0; a.sunV.value.copy(sunV);
+    postPass(post.aoM, post.ao1);
+    blur(post.ao1, post.ao2, post.ao1, post.ao1.width, post.ao1.height);
+    if (lvl > 1) {   // light shafts: the bright sky around the sun, blocked by whatever is in front of it
+      const r = post.raysM.uniforms;
+      r.tScene.value = post.rt.texture; r.tDepth.value = post.rt.depthTexture; r.sunPos.value.set(sx, sy); r.aspect.value = camera.aspect; r.sunVis.value = sunOn ? 1 : 0;
+      postPass(post.raysM, post.r);
+    }
+    const u = post.final2.uniforms;
+    u.tScene.value = post.rt.texture; u.tDepth.value = post.rt.depthTexture; u.tAO.value = post.ao1.texture; u.tBloom.value = post.a.texture; u.tRays.value = post.r.texture;
+    u.res.value.set(post.w, post.h); u.tanHalf.value.set(tan2[0], tan2[1]); u.near.value = camera.near; u.far.value = camera.far; u.sunPos.value.set(sx, sy);
+    u.time.value = tt; u.bloom.value = lvl > 1 ? 0.7 : 0.4; u.raysAmt.value = lvl > 1 ? 0.55 : 0; u.uw.value = (underwater && lvl > 1) ? 1 : 0; u.dayK.value = Math.max(0.15, dayF);
+    u.sunVis.value = sunOn ? 1 : 0; u.aoAmt.value = lvl > 1 ? 1.0 : 0.85; u.shadowAmt.value = lvl > 1 ? 0.5 * Math.max(0, Math.min(1, dayF)) : 0;
+    u.hazeAmt.value = lvl > 1 ? 0.007 : 0.004; u.grain.value = lvl > 1 ? 0.028 : 0; u.dusk.value = dusk;
+    u.hazeCol.value.set(skyCol.r, skyCol.g, skyCol.b); u.sunCol.value.set(sunColU.r, sunColU.g, sunColU.b); u.sunV.value.copy(sunV);
+    postPass(post.final2, null);
   } catch (err) {
     console.warn('Shaders disabled:', err); post.broken = true; renderer.setRenderTarget(null); renderer.render(scene, camera); toast('Shaders are not supported on this device');
   }
@@ -4472,10 +4633,9 @@ function goFullscreen() {
 }
 function askFullscreen() {   // phones and tablets only, once per visit
   const el = document.documentElement, can = !!(el.requestFullscreen || el.webkitRequestFullscreen);
-  let seen = false; try { seen = sessionStorage.getItem('bc_fs') === '1'; } catch (e) {}
-  if (!IS_MOBILE || !can || seen || document.fullscreenElement) return;
+  if (!IS_MOBILE || !can || document.fullscreenElement || document.webkitFullscreenElement) return;
   const box = $('fs-ask'); box.classList.add('on');
-  const done = yes => { box.classList.remove('on'); try { sessionStorage.setItem('bc_fs', '1'); } catch (e) {} if (yes) goFullscreen(); };
+  const done = yes => { box.classList.remove('on'); if (yes) goFullscreen(); };
   $('fs-yes').onclick = () => done(true); $('fs-no').onclick = () => done(false);
 }
 
