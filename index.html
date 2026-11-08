@@ -230,6 +230,7 @@ body.menu #chatlog{display:none}
     <button class="big" id="b-resume">Resume</button>
     <button class="big alt" id="b-cmds">Commands: Off</button>
     <button class="big alt" id="b-host">Open to Friends (Multiplayer)</button>
+    <button class="big danger" id="b-closeroom" style="display:none">Close Room</button>
     <button class="big alt" id="b-pause-settings">Settings</button>
     <button class="big danger" id="b-quit">Save &amp; Quit to Title</button>
   </div>
@@ -819,8 +820,9 @@ for (const mt of [matOpaque, matTrans]) mt.onBeforeCompile = sh => {
 let state = 'menu';       // menu | playing | paused | inventory | dead
 let W = null;             // current world record
 let savedChunks = new Map();
+const savedDirty = new Set();     // chunk keys whose data in savedChunks was edited while the chunk was not loaded
 const pendingEdits = new Map();   // block edits (from other players) waiting for their chunk to load
-const NET = { role: null, peer: null, code: '', conns: new Map(), myId: 0, nextId: 1, applying: false, players: new Map(), hostConn: null, tPos: 0, tMob: 0, tTime: 0, ghosts: new Map(), loading: false, inbox: [], lootTo: null };
+const NET = { role: null, peer: null, code: '', conns: new Map(), myId: 0, nextId: 1, applying: false, players: new Map(), hostConn: null, tPos: 0, tMob: 0, tTime: 0, ghosts: new Map(), loading: false, inbox: [], lootTo: null, isOp: false, retry: null, rejoining: false, dropSeq: 0, stateT: 0, myName: '' };
 let tod = 0.12, dayF = 1;
 const stats = { hp: 20, food: 20, exh: 0, regenT: 0, starveT: 0, invul: 0 };
 let statsDirty = true;
@@ -1027,7 +1029,7 @@ function genChunk(cx, cz) {
     while (y > 0) { const id = data[(y * CS + z) * CS + x]; if (id !== 0 && id !== B.WATER) break; y--; }
     hm[z * CS + x] = y; if (y > top) top = y;
   }
-  return { cx, cz, data, hm, top: Math.min(WH - 1, top + 1), mesh: null, tmesh: null, dirty: true, mod: !!saved || !!pe, saveDirty: !!pe };
+  return { cx, cz, data, hm, top: Math.min(WH - 1, top + 1), mesh: null, tmesh: null, dirty: true, mod: !!saved || !!pe, saveDirty: !!pe || savedDirty.delete(cx + ',' + cz) };
 }
 
 /* ============================== meshing ============================== */
@@ -1884,21 +1886,23 @@ function updateStats(dt) {
 
 /* ============================== dropped items ============================== */
 const drops = [];
-function spawnItem(id, n, x, y, z, vx, vy, vz, delay, d) {
+function spawnItem(id, n, x, y, z, vx, vy, vz, delay, d, did) {
   const mesh = new THREE.Mesh(itemGeo(id), dropMat);
   mesh.scale.setScalar(isSprite(id) ? 0.5 : 0.26);
   scene.add(mesh);
-  drops.push({ id, n, d, x, y, z, vx, vy, vz, w: 0.13, h: 0.26, onGround: false, blocked: false, age: 0, delay: delay || 0.5, mesh, spin: Math.random() * 6 });
+  const o = { id, n, d, did, x, y, z, vx, vy, vz, w: 0.13, h: 0.26, onGround: false, blocked: false, age: 0, delay: delay || 0.5, mesh, spin: Math.random() * 6 };
+  drops.push(o);
   if (drops.length > 220) removeDrop(0);
+  return o;
 }
 function removeDrop(i) { scene.remove(drops[i].mesh); drops.splice(i, 1); }
 const fwd = new THREE.Vector3();
 function throwItem(id, n, scatter, d) {
   camera.getWorldDirection(fwd);
   if (scatter) {
-    spawnItem(id, n, P.x, P.y + 1, P.z, (Math.random() - 0.5) * 6, 3 + Math.random() * 3, (Math.random() - 0.5) * 6, 1.5, d);
+    return spawnItem(id, n, P.x, P.y + 1, P.z, (Math.random() - 0.5) * 6, 3 + Math.random() * 3, (Math.random() - 0.5) * 6, 1.5, d);
   } else {
-    spawnItem(id, n, camera.position.x + fwd.x * 0.5, camera.position.y - 0.25 + fwd.y * 0.4, camera.position.z + fwd.z * 0.5, fwd.x * 5.5, fwd.y * 4 + 1.8, fwd.z * 5.5, 1.6, d);
+    return spawnItem(id, n, camera.position.x + fwd.x * 0.5, camera.position.y - 0.25 + fwd.y * 0.4, camera.position.z + fwd.z * 0.5, fwd.x * 5.5, fwd.y * 4 + 1.8, fwd.z * 5.5, 1.6, d);
   }
 }
 function dropSelected(whole) {
@@ -1906,7 +1910,11 @@ function dropSelected(whole) {
   const n = whole ? s.n : 1;
   const id = s.id, dd = s.d;
   takeFromSlot(sel, n);
-  throwItem(id, n, false, dd);
+  const o = throwItem(id, n, false, dd);
+  if (NET.role && o) {   // everyone in the room sees the thrown item and can pick it up
+    o.did = NET.myId + '-' + (++NET.dropSeq) + '-' + Math.floor(Math.random() * 1e6);
+    netSendUp({ t: 'drop', did: o.did, id, n, d: dd || 0, x: r2(o.x), y: r2(o.y), z: r2(o.z), vx: r2(o.vx), vy: r2(o.vy), vz: r2(o.vz) });
+  }
   sfx(900, 0.06, 0.3);
 }
 function updateDrops(dt) {
@@ -1925,7 +1933,7 @@ function updateDrops(dt) {
         const dx = P.x - d.x, dz = P.z - d.z, dy = (P.y + 0.9) - d.y;
         if (dx * dx + dz * dz < 1.6 && Math.abs(dy) < 1.6) {
           const left = addItem(d.id, d.n, d.d);
-          if (left < d.n) sfx(2200, 0.05, 0.25);
+          if (left < d.n) { sfx(2200, 0.05, 0.25); if (d.did && NET.role) netSendUp({ t: 'pick', did: d.did, n: left }); }
           if (left <= 0) { removeDrop(i); continue; }
           d.n = left;
         }
@@ -2256,7 +2264,7 @@ function trySleep(t) {
   if (sleep) return;
   const night = Math.sin(tod * Math.PI * 2) < 0.08;
   if (!night) { W.bed = [t.x, t.y, t.z]; toast('Respawn point set. You can only sleep at night.'); swing = 1; return; }
-  if (W.guest) { toast('Only the host can skip the night'); return; }
+  if (W.guest) { netSend(NET.hostConn, { t: 'sleep', bed: [t.x, t.y, t.z] }); W.bed = [t.x, t.y, t.z]; toast('Sleeping... the night is skipped for everyone'); swing = 1; return; }
   if (W.mode === 'survival' && W.diff !== 'peaceful') {
     for (const m of mobs) if (m.hostile && Math.hypot(m.x - t.x, m.z - t.z) < 16 && Math.abs(m.y - t.y) < 8) { toast('You may not rest now, there are monsters nearby'); return; }
   }
@@ -2265,8 +2273,12 @@ function trySleep(t) {
 }
 function useEgg(s) {
   if (!target) return;
-  if (W.guest) { toast('Only the host can spawn mobs'); return; }
   const type = ITEMS[s.id].egg;
+  if (W.guest) {   // the host owns the mobs: ask it to spawn one there
+    netSend(NET.hostConn, { t: 'egg', type, x: target.x + target.fx + 0.5, y: target.y + target.fy + 0.02, z: target.z + target.fz + 0.5 });
+    swing = 1; sfx(900, 0.12, 0.5); if (W.mode === 'survival') takeFromSlot(sel, 1);
+    return;
+  }
   if (type === 'zombie' && W.diff === 'peaceful') { toast('Hostile mobs cannot spawn on Peaceful'); return; }
   const m = spawnMob(type, target.x + target.fx + 0.5, target.y + target.fy + 0.02, target.z + target.fz + 0.5);
   if (!m) { toast('Too many mobs nearby'); return; }
@@ -2370,7 +2382,7 @@ const ITEM_MAP = {}, ITEM_KEYS = [];
   Object.assign(ITEM_MAP, { grass: B.GRASS, log: B.LOG, leaves: B.LEAVES, planks: B.PLANKS, cobble: B.COBBLE, brick: B.BRICK,
     table: B.CRAFT, pork: I.PORK, porkchop: I.PORK, beef: I.BEEF, flesh: I.FLESH, iron: I.IRON, ingot: I.IRON });
 })();
-const CMD_NAMES = ['help', 'gamemode', 'give', 'time', 'tp', 'clear', 'kill', 'difficulty', 'summon', 'locate'];
+const CMD_NAMES = ['help', 'gamemode', 'give', 'time', 'tp', 'clear', 'kill', 'difficulty', 'summon', 'locate', 'op', 'deop'];
 function chatSuggest(val) {
   if (val[0] !== '/') return [];
   const toks = val.slice(1).split(/\s+/), idx = toks.length - 1, last = toks[idx].toLowerCase().replace(/^minecraft:/, '');
@@ -2386,6 +2398,7 @@ function chatSuggest(val) {
     else if (c === 'difficulty' && idx === 1) pool = ['peaceful', 'easy', 'hard'];
     else if (c === 'summon' && idx === 1) pool = ['pig', 'cow', 'sheep', 'zombie'];
     else if (c === 'kill' && idx === 1) pool = ['@e', '@s'];
+    else if ((c === 'op' || c === 'deop' || c === 'tp') && idx === 1) pool = [S.name, ...[...NET.players.values()].map(p => p.name)];
   }
   return pool.filter(p => p.toLowerCase().startsWith(last) && p.toLowerCase() !== last).slice(0, 8);
 }
@@ -2410,8 +2423,7 @@ function submitChat() {
   if (v) {
     chatHist.push(v); if (chatHist.length > 50) chatHist.shift();
     if (v[0] === '/') {
-      if (W.guest) addChat('Only the host can use commands.', C_ERR);
-      else if (!W.cmds) addChat('Commands are turned off in this world. Turn them on in the Game Menu (Esc).', C_ERR);
+      if (!W.cmds) addChat(W.guest ? 'Commands are turned off on this server.' : 'Commands are turned off in this world. Turn them on in the Game Menu (Esc).', C_ERR);
       else { try { runCommand(v); } catch (err) { addChat('Command failed: ' + err.message, C_ERR); } }
     } else if (NET.role === 'guest') netSend(NET.hostConn, { t: 'c', m: v });
     else { addChat('<' + S.name + '> ' + v, '#fff'); if (NET.role === 'host') netBroadcast({ t: 'c', s: '<' + S.name + '> ' + v }); }
@@ -2445,15 +2457,23 @@ function setMode(m) {
   P.fly = false; P.peak = P.y; statsDirty = true;
   invChanged();
 }
+const OP_CMDS = ['gamemode', 'gm', 'give', 'tp', 'teleport', 'time', 'difficulty', 'summon', 'op', 'deop'];
+const HOST_CMDS = ['gamemode', 'gm', 'give', 'time', 'difficulty', 'summon', 'op', 'deop'];
 function runCommand(line) {
   const parts = line.slice(1).trim().split(/\s+/);
   const cmd = (parts.shift() || '').toLowerCase().replace(/^minecraft:/, '');
   const say = t => addChat(t, C_OK), bad = t => addChat(t, C_ERR);
   const self = tok => { const l = tok.toLowerCase(); return l === '@p' || l === '@s' || l === '@a' || l === '@r' || l === S.name.toLowerCase(); };
+  // operator-only commands. Guests who are ops send the ones that change the shared world to the host.
+  if (W.guest) {
+    if (OP_CMDS.includes(cmd) && !NET.isOp) return bad('You need to be an operator to use /' + cmd + '. Ask the host to type /op ' + (NET.myName || S.name));
+    if (HOST_CMDS.includes(cmd)) { netSend(NET.hostConn, { t: 'cmd', line, pos: [P.x, P.y, P.z], yaw: P.yaw }); return; }
+  }
   switch (cmd) {
     case 'help': case '?':
       say('Commands: /gamemode [player] <survival|creative>   /give <player> <item> [count]   /time set <day|noon|night|midnight|ticks>');
-      say('/tp <x> <y> <z>   /clear   /kill [@e]   /difficulty <peaceful|easy|hard>   /summon <pig|cow|sheep|zombie>   /locate village');
+      say('/tp <x> <y> <z> or /tp <player>   /clear   /kill   /difficulty <peaceful|easy|hard>   /summon <pig|cow|sheep|zombie>   /locate village   /op <player>   /deop <player>');
+      say('Everyone can use /help, /clear, /kill and /locate. The rest (/gamemode /give /tp /time /difficulty /summon /op) need operator status: the host types /op <name>.');
       say('Players: @p, @s or your username. Item names like grass_block, oak_planks, bed, pig_spawn_egg. Tab completes.');
       break;
     case 'gamemode': case 'gm': {
@@ -2499,8 +2519,18 @@ function runCommand(line) {
       tod = (ticks % 24000) / 24000; say('Set the time to ' + ticks);
       break;
     }
+    case 'op': case 'deop': {
+      if (!parts[0]) return bad('Usage: /' + cmd + ' <player>');
+      const nm = parts[0].toLowerCase(), on = cmd === 'op';
+      W.ops = W.ops || []; const oi = W.ops.indexOf(nm);
+      if (on && oi < 0) W.ops.push(nm); if (!on && oi >= 0) W.ops.splice(oi, 1);
+      for (const e of NET.conns.values()) if (e.name.toLowerCase() === nm) netSend(e.conn, { t: 'op', on });
+      say(on ? 'Made ' + parts[0] + ' a server operator' : 'Made ' + parts[0] + ' no longer a server operator'); saveWorld();
+      break;
+    }
     case 'tp': case 'teleport': {
-      if (parts.length < 3) return bad('Usage: /tp <x> <y> <z>   (use ~ for relative)');
+      if (parts.length === 1) { const pp = playerPos(parts[0]); if (!pp) return bad('No player was found'); parts.splice(0, 1, String(pp[0]), String(pp[1]), String(pp[2])); }
+      if (parts.length < 3) return bad('Usage: /tp <x> <y> <z>  or  /tp <player>   (use ~ for relative)');
       const pv = (tok, cur) => {
         if (tok[0] === '~') { const o = tok.length > 1 ? parseFloat(tok.slice(1)) : 0; return isNaN(o) ? null : cur + o; }
         const n = parseFloat(tok); return isNaN(n) ? null : n;
@@ -2530,7 +2560,7 @@ function runCommand(line) {
     }
     case 'kill': {
       const a = (parts[0] || '@s').toLowerCase();
-      if (a === '@e') { const n = mobs.length; while (mobs.length) removeMob(mobs[0]); say('Killed ' + n + ' entities'); break; }
+      if (a === '@e') { if (W.guest) return bad('Only the host can kill every entity'); const n = mobs.length; while (mobs.length) removeMob(mobs[0]); say('Killed ' + n + ' entities'); break; }
       if (!self(a)) return bad('No entity was found');
       say('Killed ' + S.name);
       stats.hp = 0; stats.invul = 0; statsDirty = true; die();
@@ -2583,7 +2613,7 @@ const DB = {
     return new Promise(res => {
       const m = new Map(); if (!DB.ok) return res(m);
       try {
-        const cur = DB.db.transaction('chunks').objectStore('chunks').openCursor(IDBKeyRange.bound(id + ':', id + ': '));
+        const cur = DB.db.transaction('chunks').objectStore('chunks').openCursor(IDBKeyRange.bound(id + ':', id + ':￿'));
         cur.onsuccess = () => { const c = cur.result; if (c) { m.set(c.key.slice(id.length + 1), c.value); c.continue(); } else res(m); };
         cur.onerror = () => res(m);
       } catch (e) { res(m); }
@@ -2607,7 +2637,7 @@ const DB = {
       try {
         const tx = DB.db.transaction(['worlds', 'chunks'], 'readwrite');
         tx.objectStore('worlds').delete(id);
-        tx.objectStore('chunks').delete(IDBKeyRange.bound(id + ':', id + ': '));
+        tx.objectStore('chunks').delete(IDBKeyRange.bound(id + ':', id + ':￿'));
         tx.oncomplete = () => res(true); tx.onerror = () => res(false);
       } catch (e) { res(false); }
     });
@@ -2622,8 +2652,10 @@ async function saveWorld() {
   W.tod = tod; W.played = Date.now();
   const dirty = [];
   for (const c of chunks.values()) if (c.saveDirty) { dirty.push(c); c.saveDirty = false; }
-  const ok = await DB.saveAll(W, dirty);
-  if (!ok) dirty.forEach(c => c.saveDirty = true);
+  const offl = [], offKeys = [...savedDirty];
+  for (const k of offKeys) { const d = savedChunks.get(k); if (d) { const [cx, cz] = k.split(',').map(Number); offl.push({ cx, cz, data: d }); } }
+  const ok = await DB.saveAll(W, dirty.concat(offl));
+  if (!ok) dirty.forEach(c => c.saveDirty = true); else offKeys.forEach(k => savedDirty.delete(k));
 }
 
 /* ============================== screens / menus ============================== */
@@ -2725,6 +2757,7 @@ $('b-resume').onclick = () => { lockPointer(); };
 $('b-cmds').onclick = () => {
   W.cmds = !W.cmds;
   $('b-cmds').textContent = 'Commands: ' + (W.cmds ? 'On' : 'Off');
+  if (NET.role === 'host') netBroadcast({ t: 'cmds', on: !!W.cmds });
   saveWorld();
 };
 $('b-quit').onclick = () => exitToTitle();
@@ -2737,7 +2770,7 @@ function clearWorld() {
   while (mobs.length) removeMob(mobs[0]);
   while (drops.length) removeDrop(0);
   parts.forEach(p => { p.life = 0; p.m.visible = false; });
-  savedChunks = new Map(); pendingEdits.clear();
+  savedChunks = new Map(); pendingEdits.clear(); savedDirty.clear();
   furnaces.clear();
 }
 let demo = { cx: 0, cz: 0, h: 30, a: 0 };
@@ -2759,6 +2792,8 @@ function setupDemo() {
   applySettings();
 }
 async function exitToTitle() {
+  if (NET.role === 'guest') sendMyState();
+  NET.retry = null;
   await saveWorld();
   netClose();
   held = null; renderHeld();
@@ -2818,6 +2853,7 @@ async function enterWorld(rec, mp) {
   chatlog.innerHTML = '';
   if (rec.cmds) addChat('Commands are on. Press T or / to open chat, /help lists commands.', '#cfd9e6');
   showScreen('s-pause');
+  if (rec.hosting && !rec.guest) setTimeout(() => { if (W === rec) hostGame(); }, 400);   // the room reopens by itself with the same code
 }
 
 /* ============================== skins (64x64 Minecraft-format skin PNGs) ============================== */
@@ -2864,8 +2900,12 @@ function normalizeSkin(img) {
   else { g.drawImage(img, 0, 0, 64, 32); const t = document.createElement('canvas'); t.width = t.height = 64; t.getContext('2d').drawImage(c, 0, 0); mirrorLimb(g, t, 0, 16, 16, 48); mirrorLimb(g, t, 40, 16, 32, 48); }
   return c;
 }
-function detectSlim(c) {   // a slim (3px) arm leaves the 4th column of the right arm empty
-  try { const d = c.getContext('2d').getImageData(47, 20, 1, 12).data; for (let i = 3; i < d.length; i += 4) if (d[i] > 10) return false; return true; } catch (e) { return false; }
+function detectSlim(c) {   // slim (3px) arms leave the last 2 columns of each arm's back face empty: x=54..55 (right arm), x=46..47 (left arm)
+  try {
+    const g = c.getContext('2d');
+    const empty = (x, y, w, h) => { const d = g.getImageData(x, y, w, h).data; for (let i = 3; i < d.length; i += 4) if (d[i] > 10) return false; return true; };
+    return empty(54, 20, 2, 12) && empty(46, 52, 2, 12);
+  } catch (e) { return false; }
 }
 // one cuboid with real skin-atlas UVs. w,h,d in skin pixels; (u,v) is the box's origin in the 64x64 skin
 function skinBoxGeo(w, h, d, u, v, grow) {
@@ -2892,6 +2932,7 @@ function skinBoxGeo(w, h, d, u, v, grow) {
 function buildSkinModel(canvas, slim) {
   const tex = new THREE.CanvasTexture(canvas); tex.magFilter = tex.minFilter = THREE.NearestFilter; tex.generateMipmaps = false;
   const mat = new THREE.MeshLambertMaterial({ map: tex, transparent: true, alphaTest: 0.5 });
+  mat.color.setScalar(0.8);   // the scene lights add up to >1, which washes pale skins out
   const root = new THREE.Group(), geos = [];
   const add = (parent, w, h, d, u, v, grow, x, y, z) => { const g = skinBoxGeo(w, h, d, u, v, grow); geos.push(g); const m = new THREE.Mesh(g, mat); m.position.set(x, y, z); parent.add(m); };
   const pivot = (x, y, z) => { const p = new THREE.Group(); p.position.set(x * PXU, y * PXU, z * PXU); root.add(p); return p; };
@@ -2938,8 +2979,8 @@ function initSkinPreview() {
   const cv = $('skin-prev');
   const r = new THREE.WebGLRenderer({ canvas: cv, antialias: false, alpha: true });
   r.setSize(cv.width, cv.height, false); r.setClearColor(0x000000, 0);
-  const sc = new THREE.Scene(); sc.add(new THREE.AmbientLight(0xffffff, 0.85));
-  const dl = new THREE.DirectionalLight(0xffffff, 0.55); dl.position.set(2, 3, 4); sc.add(dl);
+  const sc = new THREE.Scene(); sc.add(new THREE.AmbientLight(0xffffff, 0.75));
+  const dl = new THREE.DirectionalLight(0xffffff, 0.4); dl.position.set(2, 3, 4); sc.add(dl);
   const cam = new THREE.PerspectiveCamera(26, cv.width / cv.height, 0.1, 30); cam.position.set(0, 0.95, 5.2); cam.lookAt(0, 0.9, 0);
   skinPrev = { r, sc, cam, model: null, spin: 0.55, t: 0, drag: false };
   cv.onpointerdown = e => { skinPrev.drag = true; skinPrev.lx = e.clientX; try { cv.setPointerCapture(e.pointerId); } catch (x) {} };
@@ -3062,7 +3103,18 @@ function makeRemotePlayer(name, skinCanvas, slim) {
 function setPlayerSkin(p, canvas, slim) {
   if (p.model) { p.group.remove(p.model.root); p.model.dispose(); }
   p.model = buildSkinModel(canvas, slim); p.group.add(p.model.root);
-  p.headG = p.model.headG; p.legs = p.model.legs; p.arms = p.model.arms;
+  p.headG = p.model.headG; p.legs = p.model.legs; p.arms = p.model.arms; p.heldMesh = null;
+  if (p.heldId) setRemoteHeld(p, p.heldId);
+}
+function setRemoteHeld(p, id) {
+  if (p.heldMesh) { p.arms[0].remove(p.heldMesh); p.heldMesh = null; }
+  p.heldId = id | 0;
+  if (!p.heldId) return;
+  try {
+    const m = new THREE.Mesh(itemGeo(p.heldId), dropMat);
+    m.scale.setScalar(isSprite(p.heldId) ? 0.55 : 0.3); m.position.set(0, -0.6, 0.2); m.rotation.set(isSprite(p.heldId) ? 0.5 : 0, 0.5, 0);
+    p.arms[0].add(m); p.heldMesh = m;
+  } catch (e) { p.heldId = 0; }
 }
 function addRemote(id, name, x, y, z, yaw, pitch, skin) {
   if (NET.players.has(id)) return NET.players.get(id);
@@ -3093,6 +3145,7 @@ function updateRemotePlayers(dt) {
   }
 }
 function setRemoteTarget(p, v) {
+  if (v[5] !== undefined && (v[5] | 0) !== (p.heldId | 0)) setRemoteHeld(p, v[5]);
   p.tx = v[0]; p.ty = v[1]; p.tz = v[2]; p.tyaw = v[3]; p.tpitch = v[4];
   if (!p.init) { p.init = true; p.x = p.tx; p.y = p.ty; p.z = p.tz; p.yaw = p.tyaw; p.pitch = p.tpitch; }
 }
@@ -3135,12 +3188,30 @@ function lootItem(id, n, x, y, z, vx, vy, vz, d) {
 
 /* ---- block edits ---- */
 function netSendBlock(x, y, z, id) { netSendUp({ t: 'b', x, y, z, id }); }
+// a block edit in a chunk that isn't loaded here: patch (and later persist) the stored chunk data instead of losing it
+function editOffline(x, y, z, id) {
+  if (y < 0 || y >= WH) return;
+  const cx = x >> 4, cz = z >> 4, k = cx + ',' + cz, old = savedChunks.get(k);
+  const data = old ? new Uint8Array(old) : terrainGen(cx, cz);
+  data[(y * CS + (z & 15)) * CS + (x & 15)] = id;
+  savedChunks.set(k, data); savedDirty.add(k);
+}
+const wait = ms => new Promise(r => setTimeout(r, ms));
+function playerPos(name) {
+  const l = name.toLowerCase();
+  for (const p of NET.players.values()) if (p.name.toLowerCase() === l) return [r2(p.tx), r2(p.ty), r2(p.tz)];
+  return null;
+}
+function sendMyState() {
+  if (NET.role !== 'guest' || !W || NET.loading) return;
+  netSend(NET.hostConn, { t: 'state', inv: inv.map(q => q ? [q.id, q.n, q.d || 0] : 0), pos: [r2(P.x), r2(P.y), r2(P.z)], mode: W.mode, hp: stats.hp, food: stats.food });
+}
 function netApplyBlock(d) {
   const cx = d.x >> 4, cz = d.z >> 4, c = getChunk(cx, cz);
   NET.applying = true;
   try {
     if (c) setBlock(d.x, d.y, d.z, d.id);
-    else { const k = cx + ',' + cz; let a = pendingEdits.get(k); if (!a) pendingEdits.set(k, a = []); a.push([d.x & 15, d.y, d.z & 15, d.id]); }
+    else editOffline(d.x, d.y, d.z, d.id);
   } finally { NET.applying = false; }
 }
 
@@ -3149,6 +3220,7 @@ function updateHostBtn() {
   const b = $('b-host'); if (!b) return;
   const guest = !!(W && W.guest);
   b.style.display = guest ? 'none' : ''; $('b-cmds').style.display = guest ? 'none' : '';
+  $('b-closeroom').style.display = NET.role === 'host' ? '' : 'none';
   $('b-quit').textContent = guest ? 'Leave Game' : 'Save & Quit to Title';
   $('b-dead-quit').textContent = guest ? 'Leave Game' : 'Save & Quit to Title';
   b.textContent = NET.role === 'host' ? 'Room ' + NET.code + ' · ' + (NET.players.size + 1) + ' online (click to copy)' : 'Open to Friends (Multiplayer)';
@@ -3160,7 +3232,7 @@ function netClose() {
   if (NET.peer) { try { NET.peer.destroy(); } catch (x) {} }
   for (const id of [...NET.players.keys()]) removeRemote(id);
   NET.ghosts.clear(); NET.conns.clear();
-  NET.role = null; NET.peer = null; NET.hostConn = null; NET.code = ''; NET.loading = false; NET.inbox = []; NET.applying = false; NET.lootTo = null;
+  NET.role = null; NET.peer = null; NET.hostConn = null; NET.code = ''; NET.loading = false; NET.inbox = []; NET.applying = false; NET.lootTo = null; NET.isOp = false;
 }
 const C_NET = '#ffe98a';
 
@@ -3170,23 +3242,32 @@ async function hostGame() {
   const b = $('b-host'); b.textContent = 'Opening room...'; b.disabled = true;
   try {
     if (!(await loadPeerLib())) throw new Error('Could not load the multiplayer library (internet needed).');
-    let peer = null, code = '';
+    let peer = null, code = '', want = W.roomCode;
+    const open1 = c => new Promise(res => {
+      const p = new Peer(PEER_PREFIX + c, PEER_OPTS);
+      const to = setTimeout(() => { try { p.destroy(); } catch (e) {} res(null); }, 12000);
+      p.on('open', () => { clearTimeout(to); res(p); });
+      p.on('error', e => { clearTimeout(to); try { p.destroy(); } catch (x) {} res(e.type === 'unavailable-id' ? null : 'ERR:' + e.type); });
+    });
+    if (want) {   // keep the same code every time this world is opened (the matchmaking server may still hold the old one for a few seconds)
+      for (let t = 0; t < 4 && !peer; t++) {
+        const r = await open1(want); if (typeof r === 'string') throw new Error('Could not reach the matchmaking server (' + r.slice(4) + ').');
+        if (r) { peer = r; code = want; } else if (t < 3) await wait(3000);
+      }
+    }
     for (let tries = 0; tries < 6 && !peer; tries++) {
-      code = randCode();
-      peer = await new Promise(res => {
-        const p = new Peer(PEER_PREFIX + code, PEER_OPTS);
-        const to = setTimeout(() => { try { p.destroy(); } catch (e) {} res(null); }, 12000);
-        p.on('open', () => { clearTimeout(to); res(p); });
-        p.on('error', e => { clearTimeout(to); try { p.destroy(); } catch (x) {} res(e.type === 'unavailable-id' ? null : 'ERR:' + e.type); });
-      });
-      if (typeof peer === 'string') throw new Error('Could not reach the matchmaking server (' + peer.slice(4) + ').');
+      const c = randCode(), r = await open1(c);
+      if (typeof r === 'string') throw new Error('Could not reach the matchmaking server (' + r.slice(4) + ').');
+      if (r) { peer = r; code = c; }
     }
     if (!peer) throw new Error('Could not open a room. Try again.');
+    W.roomCode = code; W.hosting = true;
     NET.role = 'host'; NET.peer = peer; NET.code = code; NET.myId = 0; NET.nextId = 1; NET.tPos = NET.tMob = NET.tTime = 0;
     peer.on('connection', netHostAccept);
     peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
     peer.on('error', e => { addChat('Network: ' + e.type, C_ERR); });
-    addChat('Room is open! Share the code ' + code + ' (friends: Multiplayer on the title screen).', C_NET);
+    addChat('Room is open! Share the code ' + code + ' (friends: Multiplayer on the title screen). The room reopens with this code whenever you load this world.', C_NET);
+    saveWorld();
     toast('Room code: ' + code);
   } catch (e) { addChat(e.message, C_ERR); toast(e.message); }
   b.disabled = false; updateHostBtn();
@@ -3209,7 +3290,8 @@ function netHostAccept(conn) {
       const players = [[0, S.name, r2(P.x), r2(P.y), r2(P.z), r2(P.yaw), r2(P.pitch), mySkinData()]];
       for (const [pid, p] of NET.players) players.push([pid, p.name, r2(p.tx), r2(p.ty), r2(p.tz), r2(p.tyaw), r2(p.tpitch), p.skinData]);
       addRemote(id, name, P.x, P.y, P.z, P.yaw, 0, skin);
-      netSend(conn, { t: 'welcome', id, name, seed: SEED, vill: VMODE, mode: W.mode, diff: W.diff, tod, pos: [P.x, P.y, P.z], spawn: W.spawn || null, players });
+      const isOp = !!(W.ops && W.ops.includes(name.toLowerCase())), saved = (W.pdata && W.pdata[name.toLowerCase()]) || null;
+      netSend(conn, { t: 'welcome', id, name, seed: SEED, vill: VMODE, mode: W.mode, diff: W.diff, tod, pos: [P.x, P.y, P.z], spawn: W.spawn || null, players, cmds: !!W.cmds, op: isOp, saved });
       const out = new Map();
       for (const [k2, data] of savedChunks) out.set(k2, data);
       for (const c of chunks.values()) if (c.mod) out.set(c.cx + ',' + c.cz, c.data);
@@ -3221,7 +3303,7 @@ function netHostAccept(conn) {
       addChat(name + ' joined the game', C_NET); updateHostBtn();
       return;
     }
-    netHandleHost(id, d);
+    try { netHandleHost(id, d); } catch (err) { console.warn('net', err); }
   });
   const gone = () => { if (joined && NET.conns.has(id)) netDropGuest(id); };
   conn.on('close', gone); conn.on('error', gone);
@@ -3234,7 +3316,29 @@ function netDropGuest(id) {
 }
 function netHandleHost(id, d) {
   switch (d.t) {
-    case 'p': { const p = NET.players.get(id); if (p && Array.isArray(d.v) && d.v.length === 5) setRemoteTarget(p, d.v); break; }
+    case 'p': { const p = NET.players.get(id); if (p && Array.isArray(d.v) && d.v.length >= 5) setRemoteTarget(p, d.v); break; }
+    case 'drop': {
+      if (!(typeof d.did === 'string' && Number.isInteger(d.id) && d.id > 0 && d.id < 400 && [d.x, d.y, d.z, d.vx, d.vy, d.vz].every(Number.isFinite))) break;
+      spawnItem(d.id, Math.min(64, d.n | 0 || 1), d.x, d.y, d.z, d.vx, d.vy, d.vz, 0.8, d.d || undefined, d.did); netBroadcast(d, id); break;
+    }
+    case 'pick': {
+      const i = drops.findIndex(q => q.did === d.did); if (i >= 0) { if (d.n <= 0) removeDrop(i); else drops[i].n = d.n; }
+      netBroadcast(d, id); break;
+    }
+    case 'state': {
+      const e = NET.conns.get(id); if (!e || !Array.isArray(d.inv)) break;
+      W.pdata = W.pdata || {};
+      W.pdata[e.name.toLowerCase()] = { inv: d.inv.slice(0, 36).map(q => Array.isArray(q) ? [q[0] | 0, q[1] | 0, q[2] | 0] : 0), pos: (d.pos || []).slice(0, 3).map(Number), mode: d.mode === 'creative' ? 'creative' : 'survival', hp: +d.hp || 20, food: +d.food || 20 };
+      break;
+    }
+    case 'cmd': hostExecFor(id, d); break;
+    case 'egg': {
+      if (!MOB_TYPES.includes(d.type) || ![d.x, d.y, d.z].every(Number.isFinite)) break;
+      if (d.type === 'zombie' && W.diff === 'peaceful') break;
+      const m = spawnMob(d.type, d.x, d.y, d.z); if (m) { let g = 0; while (bodyHit(m, m.x, m.y, m.z) && g++ < 4) m.y += 1; m.yaw = Math.random() * 6.283; }
+      break;
+    }
+    case 'sleep': if (Math.sin(tod * Math.PI * 2) < 0.08) { tod = 0.06; netBroadcast({ t: 'time', v: tod }); addChat((NET.players.get(id) || { name: 'Someone' }).name + ' slept through the night', C_NET); } break;
     case 'b': {
       if (!(Number.isInteger(d.x) && Number.isInteger(d.y) && Number.isInteger(d.z) && Number.isInteger(d.id)) || d.id < 0 || d.id >= DEF.length) break;
       netApplyBlock(d); netBroadcast(d, id); break;
@@ -3248,6 +3352,78 @@ function netHandleHost(id, d) {
       const m = mobs.find(q => q.nid === d.id); if (!m) break;
       NET.lootTo = id; damageMob(m, Math.max(0, Math.min(+d.dmg || 2, 999)), true, +d.px, +d.pz); NET.lootTo = null; break;
     }
+  }
+}
+
+/* ---- commands relayed from operators who joined as guests ---- */
+function hostExecFor(id, d) {
+  const e = NET.conns.get(id); if (!e || typeof d.line !== 'string' || d.line[0] !== '/') return;
+  const reply = (t, bad) => netSend(e.conn, { t: 'say', s: t, bad: !!bad });
+  if (!W.cmds) return reply('Commands are turned off on this server.', true);
+  if (!(W.ops && W.ops.includes(e.name.toLowerCase()))) return reply('You need to be an operator to use that.', true);
+  const parts = d.line.slice(1).trim().split(/\s+/), cmd = (parts.shift() || '').toLowerCase().replace(/^minecraft:/, '');
+  const me = e.name.toLowerCase();
+  const find = tok => {
+    const l = (tok || '').toLowerCase();
+    if (!tok || l === '@s' || l === '@p' || l === me) return [{ e }];
+    if (l === '@a') return [{ host: true }, ...[...NET.conns.values()].map(x => ({ e: x }))];
+    if (l === S.name.toLowerCase()) return [{ host: true }];
+    for (const x of NET.conns.values()) if (x.name.toLowerCase() === l) return [{ e: x }];
+    return null;
+  };
+  const nameOf = t => t.host ? S.name : t.e.name;
+  const norm = t => { const m = (t || '').toLowerCase(); return (m === 'survival' || m === 's' || m === '0') ? 'survival' : (m === 'creative' || m === 'c' || m === '1') ? 'creative' : null; };
+  switch (cmd) {
+    case 'gamemode': case 'gm': {
+      let mode = null, who = null;
+      if (norm(parts[0])) { mode = norm(parts[0]); who = parts[1]; } else if (norm(parts[1])) { mode = norm(parts[1]); who = parts[0]; }
+      if (!mode) return reply('Usage: /gamemode [player] <survival|creative>', true);
+      const ts = find(who); if (!ts) return reply('No player was found', true);
+      for (const t of ts) { if (t.host) { setMode(mode); addChat(e.name + ' set your game mode to ' + mode, C_NET); } else netSend(t.e.conn, { t: 'gm', mode }); }
+      return reply('Set ' + (ts.length > 1 ? ts.length + ' players' : nameOf(ts[0]) + "'s game mode") + ' to ' + (mode === 'creative' ? 'Creative' : 'Survival') + ' Mode');
+    }
+    case 'give': {
+      if (parts.length < 2) return reply('Usage: /give <player> <item> [count]', true);
+      const ts = find(parts[0]); if (!ts) return reply('No player was found', true);
+      const rest = parts.slice(1); let count = 1;
+      if (rest.length > 1 && /^-?\d+$/.test(rest[rest.length - 1])) count = parseInt(rest.pop(), 10);
+      const iid = ITEM_MAP[normName(rest.join('_'))];
+      if (!iid) return reply('Unknown item "' + rest.join(' ') + '"', true);
+      if (!(count >= 1 && count <= 2304)) return reply('Count must be between 1 and 2304', true);
+      for (const t of ts) { if (t.host) { const left = addItem(iid, count); if (left > 0) throwItem(iid, left); } else netSend(t.e.conn, { t: 'give', id: iid, n: count }); }
+      return reply('Gave ' + count + ' [' + infoOf(iid).n + '] to ' + (ts.length > 1 ? ts.length + ' players' : nameOf(ts[0])));
+    }
+    case 'time': {
+      const sub = (parts[0] || '').toLowerCase(), tt = (parts[1] || '').toLowerCase();
+      if (sub !== 'set' || !tt) return reply('Usage: /time set <day|noon|night|midnight|ticks>', true);
+      const named = { day: 1000, noon: 6000, sunset: 12000, night: 13000, midnight: 18000, sunrise: 0 };
+      const ticks = named[tt] != null ? named[tt] : /^\d+$/.test(tt) ? parseInt(tt, 10) : null;
+      if (ticks == null) return reply('Unknown time "' + parts[1] + '"', true);
+      tod = (ticks % 24000) / 24000; netBroadcast({ t: 'time', v: tod }); return reply('Set the time to ' + ticks);
+    }
+    case 'difficulty': {
+      const df = { peaceful: 'peaceful', p: 'peaceful', easy: 'easy', e: 'easy', hard: 'hard', h: 'hard' }[(parts[0] || '').toLowerCase()];
+      if (!df) return reply('Usage: /difficulty <peaceful|easy|hard>', true);
+      W.diff = df; return reply('Set the difficulty to ' + df);
+    }
+    case 'summon': {
+      const ty = normName(parts[0] || '');
+      if (!MOB_TYPES.includes(ty)) return reply('Usage: /summon <pig|cow|sheep|zombie>', true);
+      if (ty === 'zombie' && W.diff === 'peaceful') return reply('Hostile mobs cannot spawn on Peaceful', true);
+      const px = (d.pos && +d.pos[0]) || P.x, pz = (d.pos && +d.pos[2]) || P.z, yw = +d.yaw || 0;
+      const x = px - Math.sin(yw) * 3, z = pz - Math.cos(yw) * 3;
+      const m = spawnMob(ty, x, Math.max(1, getHeight(Math.floor(x), Math.floor(z)) + 1.02), z);
+      return m ? reply('Summoned ' + ty) : reply('Too many mobs nearby', true);
+    }
+    case 'op': case 'deop': {
+      if (!parts[0]) return reply('Usage: /' + cmd + ' <player>', true);
+      const nm = parts[0].toLowerCase(), on = cmd === 'op';
+      W.ops = W.ops || []; const oi = W.ops.indexOf(nm);
+      if (on && oi < 0) W.ops.push(nm); if (!on && oi >= 0 && nm !== S.name.toLowerCase()) W.ops.splice(oi, 1);
+      for (const x of NET.conns.values()) if (x.name.toLowerCase() === nm) netSend(x.conn, { t: 'op', on });
+      saveWorld(); return reply((on ? 'Made ' : 'Removed operator status from ') + parts[0]);
+    }
+    default: return reply('Unknown command: /' + cmd, true);
   }
 }
 
@@ -3266,7 +3442,7 @@ function netJoin(code, onStatus) {
       conn.on('close', () => { if (!done) fail('The host closed the connection.'); else netHostLost(); });
       conn.on('data', d => {
         if (!d || typeof d !== 'object') return;
-        if (done) { netHandleGuest(d); return; }
+        if (done) { try { netHandleGuest(d); } catch (err) { console.warn('net', err); } return; }
         if (d.t === 'welcome') rx.w = d;
         else if (d.t === 'chunk') { rx.chunks.set(d.cx + ',' + d.cz, rleDecode(d.d)); onStatus('Downloading world... ' + rx.chunks.size + ' chunks'); }
         else if (d.t === 'b') { const k = (d.x >> 4) + ',' + (d.z >> 4); let a = rx.pend = rx.pend || new Map(); if (!a.has(k)) a.set(k, []); a.get(k).push([d.x & 15, d.y, d.z & 15, d.id]); }
@@ -3288,38 +3464,64 @@ function netHandleGuest(d) {
     case 'time': tod = d.v; break;
     case 'gm': if (d.mode === 'survival' || d.mode === 'creative') { setMode(d.mode); addChat('The host set your game mode to ' + (d.mode === 'creative' ? 'Creative' : 'Survival') + ' Mode', C_NET); } break;
     case 'give': { const n = Math.min(2304, +d.n || 1), left = addItem(d.id, n); if (left > 0) throwItem(d.id, left); sfx(2200, 0.05, 0.25); addChat('The host gave you ' + n + ' [' + infoOf(d.id).n + ']', C_NET); break; }
+    case 'say': addChat(String(d.s), d.bad ? C_ERR : C_OK); break;
+    case 'op': NET.isOp = !!d.on; addChat(d.on ? 'You are now a server operator. Type /help to see what you can use.' : 'You are no longer a server operator.', C_NET); break;
+    case 'cmds': W.cmds = !!d.on; addChat('Commands were turned ' + (d.on ? 'on' : 'off') + ' by the host.', C_NET); break;
+    case 'drop': if (typeof d.did === 'string' && Number.isInteger(d.id) && d.id > 0 && d.id < 400 && [d.x, d.y, d.z, d.vx, d.vy, d.vz].every(Number.isFinite)) spawnItem(d.id, Math.min(64, d.n | 0 || 1), d.x, d.y, d.z, d.vx, d.vy, d.vz, 0.8, d.d || undefined, d.did); break;
+    case 'pick': { const i = drops.findIndex(q => q.did === d.did); if (i >= 0) { if (d.n <= 0) removeDrop(i); else drops[i].n = d.n; } break; }
     case 'loot': spawnItem(d.id, d.n, d.x, d.y, d.z, (Math.random() - 0.5) * 2, 3, (Math.random() - 0.5) * 2, 0.5); break;
   }
 }
 function netHostLost() {
   if (NET.role !== 'guest') return;
-  netClose(); document.exitPointerLock(); held = null; renderHeld(); setupDemo(); showScreen('s-title');
-  setTimeout(() => alert('The host closed the game.'), 50);
+  const code = NET.code;
+  netClose(); document.exitPointerLock(); held = null; renderHeld(); setupDemo();
+  showScreen('s-join'); $('join-code').value = code; $('b-join-go').disabled = false;
+  const el = $('join-msg'); el.textContent = 'The host went offline. Reconnecting automatically when they are back... (Back to cancel)'; el.style.color = '';
+  NET.retry = code; autoRejoin();
 }
-async function joinGame(code) {
+async function autoRejoin() {
+  if (NET.rejoining) return; NET.rejoining = true;
+  await wait(2500);
+  while (NET.retry && !NET.role) {
+    const ok = await joinGame(NET.retry, true);
+    if (ok) break;
+    await wait(4000);
+  }
+  NET.rejoining = false;
+}
+async function joinGame(code, silent) {
   const msg = (t, err) => { const el = $('join-msg'); el.textContent = t; el.style.color = err ? '#ff8a8a' : ''; };
   code = code.trim().toUpperCase();
-  if (!/^[A-Z0-9]{5}$/.test(code)) return msg('Enter the 5-character room code.', true);
-  $('b-join-go').disabled = true; msg('Connecting...');
+  if (!/^[A-Z0-9]{5}$/.test(code)) { msg('Enter the 5-character room code.', true); return false; }
+  $('b-join-go').disabled = true; msg(silent ? 'Reconnecting...' : 'Connecting...');
+  let ok = false;
   try {
     if (!(await loadPeerLib())) throw new Error('Could not load the multiplayer library (internet needed).');
     const r = await netJoin(code, t => msg(t));
-    NET.role = 'guest'; NET.peer = r.peer; NET.hostConn = r.conn; NET.myId = r.w.id; NET.loading = true; NET.inbox = []; NET.tPos = 0;
+    if (silent && !NET.retry) { try { r.peer.destroy(); } catch (e) {} return false; }
+    NET.retry = null;
+    NET.role = 'guest'; NET.peer = r.peer; NET.hostConn = r.conn; NET.myId = r.w.id; NET.loading = true; NET.inbox = []; NET.tPos = 0; NET.stateT = 0;
+    NET.code = code; NET.isOp = !!r.w.op; NET.myName = r.w.name;
     r.peer.on('error', () => {});
     for (const [k, list] of r.pend) pendingEdits.set(k, (pendingEdits.get(k) || []).concat(list));
-    const rec = { id: 'mp-guest', name: 'Multiplayer', seed: r.w.seed, vill: r.w.vill, mode: 'survival', diff: r.w.diff, cmds: false, guest: true,
-                  tod: r.w.tod, spawn: r.w.spawn, player: null, inv: null, created: Date.now(), played: Date.now() };
+    const sv = r.w.saved;   // inventory, position and mode the host remembers for this player name
+    const rec = { id: 'mp-guest', name: 'Multiplayer', seed: r.w.seed, vill: r.w.vill, mode: sv ? sv.mode : 'survival', diff: r.w.diff, cmds: !!r.w.cmds, guest: true,
+                  tod: r.w.tod, spawn: r.w.spawn, player: null, inv: sv ? sv.inv : null, stats: sv ? { hp: sv.hp, food: sv.food } : null, created: Date.now(), played: Date.now() };
     const pend = new Map(pendingEdits);
-    await enterWorld(rec, { chunks: r.chunks, pos: r.w.pos, pend });
+    await enterWorld(rec, { chunks: r.chunks, pos: sv && sv.pos && sv.pos.length === 3 ? sv.pos : r.w.pos, pend });
     for (const [id, name, x, y, z, yaw, pitch, skin] of r.w.players) if (id !== NET.myId) addRemote(id, name, x, y, z, yaw, pitch, skin);
     NET.loading = false;
     const q = NET.inbox; NET.inbox = []; q.forEach(netHandleGuest);
-    addChat('Joined room ' + code + '. You are ' + r.w.name + '. Press T to chat.', C_NET);
-    updateHostBtn();
+    addChat('Joined room ' + code + '. You are ' + r.w.name + (NET.isOp ? ' (operator)' : '') + '. Press T to chat.', C_NET);
+    if (sv) addChat('Your inventory and position from last time were restored.', C_NET);
+    updateHostBtn(); ok = true;
   } catch (e) {
-    netClose(); showScreen('s-join'); msg(e.message, true);
+    netClose(); showScreen('s-join');
+    if (silent && NET.retry) msg('Host offline, still trying to reconnect... (' + e.message + ')'); else msg(e.message, true);
   }
   $('b-join-go').disabled = false;
+  return ok;
 }
 
 /* ---- per-frame network tick ---- */
@@ -3330,14 +3532,15 @@ function netTick(dt) {
   NET.tPos += dt;
   if (NET.tPos >= 0.1) {
     NET.tPos = 0;
-    const me = [r2(P.x), r2(P.y), r2(P.z), r2(P.yaw), r2(P.pitch)];
+    const hs = inv[sel], me = [r2(P.x), r2(P.y), r2(P.z), r2(P.yaw), r2(P.pitch), hs ? hs.id : 0];
     if (NET.role === 'guest') netSend(NET.hostConn, { t: 'p', v: me });
     else if (NET.conns.size) {
       const l = [[0, ...me]];
-      for (const [id, p] of NET.players) l.push([id, r2(p.tx), r2(p.ty), r2(p.tz), r2(p.tyaw), r2(p.tpitch)]);
+      for (const [id, p] of NET.players) l.push([id, r2(p.tx), r2(p.ty), r2(p.tz), r2(p.tyaw), r2(p.tpitch), p.heldId | 0]);
       netBroadcast({ t: 'ps', l });
     }
   }
+  if (NET.role === 'guest') { NET.stateT += dt; if (NET.stateT >= 10) { NET.stateT = 0; sendMyState(); } }
   if (NET.role === 'host' && NET.conns.size) {
     NET.tMob += dt; NET.tTime += dt;
     if (NET.tMob >= 0.15) {
@@ -3357,10 +3560,14 @@ $('b-host').onclick = () => {
   hostGame();
 };
 $('b-join').onclick = () => { $('join-code').value = ''; $('join-msg').textContent = 'Ask the host for their 5-character code (Game Menu → Open to Friends).'; $('join-msg').style.color = ''; $('b-join-go').disabled = false; showScreen('s-join'); };
-$('b-join-back').onclick = () => showScreen('s-title');
+$('b-join-back').onclick = () => { NET.retry = null; showScreen('s-title'); };
 $('join-code').oninput = e => { e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5); };
 $('join-code').onkeydown = e => { if (e.key === 'Enter') $('b-join-go').click(); };
-$('b-join-go').onclick = () => joinGame($('join-code').value);
+$('b-join-go').onclick = () => { NET.retry = null; joinGame($('join-code').value); };
+$('b-closeroom').onclick = () => {
+  if (NET.role !== 'host') return;
+  netClose(); if (W) W.hosting = false; saveWorld(); addChat('Room closed. Open it again from this menu.', C_NET); updateHostBtn();
+};
 
 /* ============================== input ============================== */
 let showDebugKey = true, shotPending = false;
@@ -3403,9 +3610,10 @@ document.addEventListener('pointerlockchange', () => {
   }
 });
 document.addEventListener('pointerlockerror', () => { if (state === 'paused') showScreen('s-pause'); });
-setInterval(() => { if (W && (state === 'playing' || state === 'inventory')) saveWorld(); }, 20000);
-document.addEventListener('visibilitychange', () => { if (document.hidden) saveWorld(); });
-window.addEventListener('beforeunload', () => { saveWorld(); });
+setInterval(() => { if (W && state !== 'menu' && state !== 'dead') saveWorld(); }, 15000);
+document.addEventListener('visibilitychange', () => { if (document.hidden) { if (NET.role === 'guest') sendMyState(); saveWorld(); } });
+window.addEventListener('beforeunload', () => { if (NET.role === 'guest') sendMyState(); saveWorld(); });
+window.addEventListener('pagehide', () => { if (NET.role === 'guest') sendMyState(); saveWorld(); });
 
 /* ============================== main loop ============================== */
 const underEl = $('under');
