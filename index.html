@@ -3570,7 +3570,7 @@ async function joinGame(code, silent) {
 /* ---- per-frame network tick ---- */
 function netTick(dt) {
   if (!NET.role) return;
-  updateRemotePlayers(dt); updateSelf(dt);
+  updateRemotePlayers(dt);
   if (!W || NET.loading) return;
   NET.tPos += dt;
   if (NET.tPos >= 0.1) {
@@ -3668,7 +3668,7 @@ let last = performance.now(), fpsT = 0, fpsN = 0, fps = 0, hudT = 0, unloadT = 0
 function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.05, (now - last) / 1000); last = now; gtime += dt;
-  netTick(dt);
+  netTick(dt); updateSelf(dt);
   if (skinScreen.classList.contains('on')) renderSkinPreview(dt);
   fpsT += dt; fpsN++; if (fpsT >= 0.5) { fps = Math.round(fpsN / fpsT); fpsT = 0; fpsN = 0; }
 
