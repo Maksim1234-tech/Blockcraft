@@ -2302,7 +2302,7 @@ let mL = false, mR = false, cdL = 0, cdR = 0;
 canvas.addEventListener('mousedown', e => {
   if (state !== 'playing' || sleep) return;
   if (e.button === 0) {
-    mL = true; cdL = 0.3;
+    mL = true; cdL = 0.3; swing = 1;   // the arm swings even when you hit nothing
     if (mobTarget) { attackMob(mobTarget.mob); return; }
     if (W.mode === 'creative') destroyTarget();
   } else if (e.button === 2) {
@@ -2350,7 +2350,7 @@ function interact(dt) {
       swing = Math.max(swing, 0.5 + 0.5 * Math.sin(performance.now() / 70));
       if (Math.random() < dt * 8) burst(target.x, target.y, target.z, target.id);
       if (breakProg >= 1) { breakProg = 0; destroyTarget(); }
-    } else breakProg = 0;
+    } else { breakProg = 0; if (swing <= 0) swing = 1; }   // keep swinging while the button is held on empty air
   }
   if (mR) {
     if (s && s.id < 100) { cdR -= dt; if (cdR <= 0) { cdR = 0.24; placeBlock(); } }
