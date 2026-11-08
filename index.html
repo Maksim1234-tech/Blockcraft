@@ -28,36 +28,47 @@ body.inv-open #stats{display:none}
 #hearts,#hunger{display:flex;gap:1px}
 .row select{width:58%;padding:8px;font-family:inherit;font-size:14px;background:#0d131c;color:#fff;border:2px solid #5b6b82}
 .mobonly{display:none}
-/* ---- touch controls ---- */
+/* ---- touch controls (sizes follow the screen height so they fit short phone screens) ---- */
+body.mobile{--u:clamp(30px,12.5vh,58px)}
 #touch{position:fixed;inset:0;display:none;z-index:4;pointer-events:none;touch-action:none}
 body.mobile.ingame #touch{display:block}
 body.mobile.chat-open #touch,body.mobile.inv-open #touch{display:none}
 body.mobile .mobonly{display:inline-block}
 body.mobile canvas#game,body.mobile #touch{touch-action:none}
-#t-stick{position:absolute;left:0;top:30%;bottom:70px;width:42%;pointer-events:auto}
-#t-look{position:absolute;left:42%;right:0;top:0;bottom:70px;pointer-events:auto}
+#t-stick{position:absolute;left:0;top:22%;bottom:calc(var(--u)*1.1);width:40%;pointer-events:auto}
+#t-look{position:absolute;left:40%;right:0;top:0;bottom:calc(var(--u)*1.1);pointer-events:auto}
 #t-base,#t-knob{position:fixed;border-radius:50%;display:none;pointer-events:none;transform:translate(-50%,-50%)}
-#t-base{width:112px;height:112px;border:3px solid rgba(255,255,255,.35);background:rgba(255,255,255,.08)}
-#t-knob{width:54px;height:54px;background:rgba(255,255,255,.45);border:2px solid rgba(255,255,255,.7)}
-.tb{position:absolute;pointer-events:auto;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(20,28,40,.55);border:2px solid rgba(255,255,255,.4);color:#fff;font-size:26px;font-family:inherit;touch-action:none;user-select:none;-webkit-user-select:none}
+#t-base{width:calc(var(--u)*2.2);height:calc(var(--u)*2.2);border:3px solid rgba(255,255,255,.35);background:rgba(255,255,255,.08)}
+#t-knob{width:calc(var(--u)*1.05);height:calc(var(--u)*1.05);background:rgba(255,255,255,.45);border:2px solid rgba(255,255,255,.7)}
+.tb{position:absolute;pointer-events:auto;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(20,28,40,.55);border:2px solid rgba(255,255,255,.4);color:#fff;font-family:inherit;touch-action:none;user-select:none;-webkit-user-select:none;font-size:calc(var(--u)*.5)}
 .tb.on{background:rgba(120,200,120,.6);border-color:#fff}
-.tb.big{width:88px;height:88px;font-size:36px}
-.tb.mid{width:66px;height:66px}
-.tb.sm{width:46px;height:46px;font-size:20px}
-#t-break{right:calc(16px + env(safe-area-inset-right));bottom:150px}
-#t-use{right:calc(118px + env(safe-area-inset-right));bottom:140px}
-#t-jump{right:calc(24px + env(safe-area-inset-right));bottom:250px}
-#t-sneak{right:calc(118px + env(safe-area-inset-right));bottom:218px;width:52px;height:52px}
-#t-run{left:calc(16px + env(safe-area-inset-left));bottom:150px}
-#t-pause{right:calc(10px + env(safe-area-inset-right));top:10px}
-#t-inv{right:calc(64px + env(safe-area-inset-right));top:10px}
-#t-chat{right:calc(118px + env(safe-area-inset-right));top:10px}
-#t-cam{right:calc(10px + env(safe-area-inset-right));top:62px}
-#t-drop{right:calc(64px + env(safe-area-inset-right));top:62px}
-#t-fly{right:calc(118px + env(safe-area-inset-right));top:62px}
-#t-full{right:calc(172px + env(safe-area-inset-right));top:10px}
-body.mobile #hotbar{z-index:8;transform:translateX(-50%) scale(.86);transform-origin:bottom center;bottom:calc(6px + env(safe-area-inset-bottom))}
-body.mobile #bossbar{top:64px}
+.tb.big{width:calc(var(--u)*1.7);height:calc(var(--u)*1.7);font-size:calc(var(--u)*.8)}
+.tb.mid{width:calc(var(--u)*1.25);height:calc(var(--u)*1.25)}
+.tb.sm{width:calc(var(--u)*.92);height:calc(var(--u)*.92);font-size:calc(var(--u)*.44)}
+/* bottom right: break (big), use beside it, jump above, sneak above use */
+#t-break{right:calc(14px + env(safe-area-inset-right));bottom:calc(var(--u)*1.05)}
+#t-use{right:calc(14px + var(--u)*1.7 + 12px + env(safe-area-inset-right));bottom:calc(var(--u)*1.05)}
+#t-jump{right:calc(14px + var(--u)*.2 + env(safe-area-inset-right));bottom:calc(var(--u)*1.05 + var(--u)*1.7 + 10px)}
+#t-sneak{right:calc(14px + var(--u)*1.7 + 12px + var(--u)*.1 + env(safe-area-inset-right));bottom:calc(var(--u)*1.05 + var(--u)*1.25 + 10px);width:calc(var(--u)*1.05);height:calc(var(--u)*1.05)}
+#t-run{left:calc(14px + env(safe-area-inset-left));bottom:calc(var(--u)*1.1)}
+/* top right: two small rows */
+#t-pause{right:calc(8px + env(safe-area-inset-right));top:8px}
+#t-inv{right:calc(8px + var(--u)*.92 + 6px + env(safe-area-inset-right));top:8px}
+#t-chat{right:calc(8px + (var(--u)*.92 + 6px)*2 + env(safe-area-inset-right));top:8px}
+#t-full{right:calc(8px + (var(--u)*.92 + 6px)*3 + env(safe-area-inset-right));top:8px}
+#t-cam{right:calc(8px + env(safe-area-inset-right));top:calc(8px + var(--u)*.92 + 6px)}
+#t-drop{right:calc(8px + var(--u)*.92 + 6px + env(safe-area-inset-right));top:calc(8px + var(--u)*.92 + 6px)}
+#t-fly{right:calc(8px + (var(--u)*.92 + 6px)*2 + env(safe-area-inset-right));top:calc(8px + var(--u)*.92 + 6px)}
+body.mobile #hotbar{z-index:8;transform:translateX(-50%) scale(.8);transform-origin:bottom center;bottom:calc(4px + env(safe-area-inset-bottom))}
+body.mobile #stats{bottom:calc(var(--u)*1.0)}
+body.mobile #armorbar{bottom:calc(var(--u)*1.0 + 24px)}
+body.mobile #bossbar{top:calc(var(--u)*2.1)}
+body.mobile #chatlog{bottom:calc(var(--u)*1.9)}
+#fs-ask{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:80;background:rgba(0,0,0,.72)}
+#fs-ask.on{display:flex}
+#fs-box{background:#17212e;border:3px solid #6b7f99;padding:20px 24px;max-width:80vw;text-align:center;color:#fff;font-size:16px}
+#fs-box button{margin:14px 8px 0;padding:12px 26px;font:bold 17px 'Courier New',monospace;color:#fff;cursor:pointer;border:3px solid #9bd68a;background:#4a8a3a}
+#fs-box button#fs-no{background:#5a2f2f;border-color:#d68a8a}
 #inv-tools{position:fixed;right:12px;top:10px;display:none;gap:8px;z-index:12}
 body.mobile.inv-open #inv-tools{display:flex}
 #inv-tools button{padding:12px 16px;font:bold 16px 'Courier New',monospace;background:#4a8a3a;color:#fff;border:3px solid #9bd68a;cursor:pointer}
@@ -177,6 +188,7 @@ body.menu #chatlog{display:none}
 <div id="bossbar"><div id="bossname">Ender Dragon</div><div id="bossbg"><div id="bossfill"></div></div></div>
 <div id="ending"><div id="endtxt"></div></div>
 <div id="stats"><div id="hearts"></div><div id="hunger"></div></div>
+<div id="fs-ask"><div id="fs-box"><div>Play in fullscreen?</div><div style="font-size:13px;color:#9fb0c6;margin-top:6px">Hides the browser bars for more room</div><button id="fs-yes">Yes</button><button id="fs-no">No</button></div></div>
 <div id="touch"><div id="t-stick"></div><div id="t-look"></div><div id="t-base"></div><div id="t-knob"></div></div>
 <div id="hotbar"></div>
 <div id="held"></div>
@@ -4413,10 +4425,7 @@ function buildTouchUI() {
   mk('t-cam', '👁', 'sm', tap('F5'));
   mk('t-drop', '🗑', 'sm', tap('KeyQ'));
   mk('t-fly', '🕊', 'sm', tap('KeyF'));
-  mk('t-full', '⛶', 'sm', () => {
-    try { const el = document.documentElement; (el.requestFullscreen || el.webkitRequestFullscreen).call(el); } catch (e) {}
-    try { screen.orientation.lock('landscape').catch(() => {}); } catch (e) {}
-  });
+  mk('t-full', '⛶', 'sm', () => { if (document.fullscreenElement || document.webkitFullscreenElement) { try { (document.exitFullscreen || document.webkitExitFullscreen).call(document); } catch (e) {} } else goFullscreen(); });
   // movement stick (left) and look area (right)
   const base = $('t-base'), knob = $('t-knob'), R = 56;
   let sid = null, sx = 0, sy = 0;
@@ -4457,12 +4466,26 @@ function buildTouchUI() {
   document.addEventListener('touchmove', e => { if (IS_MOBILE && document.body.classList.contains('ingame') && !(e.target.closest && e.target.closest('#s-settings, #s-worlds, #s-skins, #s-new, #s-join, #invp'))) e.preventDefault(); }, { passive: false });
 }
 
+function goFullscreen() {
+  try { const el = document.documentElement; (el.requestFullscreen || el.webkitRequestFullscreen).call(el); } catch (e) {}
+  try { screen.orientation.lock('landscape').catch(() => {}); } catch (e) {}
+}
+function askFullscreen() {   // phones and tablets only, once per visit
+  const el = document.documentElement, can = !!(el.requestFullscreen || el.webkitRequestFullscreen);
+  let seen = false; try { seen = sessionStorage.getItem('bc_fs') === '1'; } catch (e) {}
+  if (!IS_MOBILE || !can || seen || document.fullscreenElement) return;
+  const box = $('fs-ask'); box.classList.add('on');
+  const done = yes => { box.classList.remove('on'); try { sessionStorage.setItem('bc_fs', '1'); } catch (e) {} if (yes) goFullscreen(); };
+  $('fs-yes').onclick = () => done(true); $('fs-no').onclick = () => done(false);
+}
+
 /* ============================== boot ============================== */
 async function boot() {
   await DB.open();
   bindSettings(); bindExtraSettings(); buildTouchUI(); setTouchMode(IS_MOBILE);
   setupDemo();
   requestAnimationFrame(frame);
+  askFullscreen();
   const t0 = performance.now();
   while (performance.now() - t0 < 4000) {          // wait for a few chunks to be meshed, but never longer than 4 s
     let meshed = 0; for (const c of chunks.values()) if (c.mesh) meshed++;
