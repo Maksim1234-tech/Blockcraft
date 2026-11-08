@@ -214,7 +214,7 @@ body.menu #chatlog{display:none}
     <button id="b-settings-back">Done</button>
     <div class="controls">
       <div><span>W A S D</span> move</div><div><span>Space</span> jump / swim up</div>
-      <div><span>Shift</span> sprint (fly: down)</div><div><span>Space x2 / F</span> fly (creative)</div>
+      <div><span>Shift</span> crouch (fly: down)</div><div><span>R</span> run (hold)</div><div><span>Space x2 / F</span> fly (creative)</div>
       <div><span>Left click</span> hit / break (hold)</div><div><span>Right click</span> place / eat (hold)</div>
       <div><span>Middle click</span> pick block</div><div><span>1-9 / wheel</span> hotbar</div>
       <div><span>Q</span> drop item (Ctrl+Q stack)</div><div><span>E</span> inventory + crafting</div>
@@ -1778,20 +1778,22 @@ function updatePlayer(dt, ctl) {
   const fx = -Math.sin(P.yaw), fz = -Math.cos(P.yaw), rx = Math.cos(P.yaw), rz = -Math.sin(P.yaw);
   let ix = (K.KeyD ? 1 : 0) - (K.KeyA ? 1 : 0), iz = (K.KeyW ? 1 : 0) - (K.KeyS ? 1 : 0);
   const il = Math.hypot(ix, iz) || 1; ix /= il; iz /= il;
-  const sprint = !!(K.ShiftLeft || K.ShiftRight);
+  const sneak = !!(K.ShiftLeft || K.ShiftRight), sprint = !!K.KeyR;
   const feetWater = get(Math.floor(P.x), Math.floor(P.y + 0.4), Math.floor(P.z)) === B.WATER;
   const headWater = get(Math.floor(P.x), Math.floor(P.y + P.eye), Math.floor(P.z)) === B.WATER;
   underwater = headWater;
-  sprintingNow = sprint && (ix || iz) && !P.fly;
-  let speed = P.fly ? (sprint ? 22 : 11) : (sprint ? 6.2 : 4.4);
+  sprintingNow = sprint && !sneak && (ix || iz) && !P.fly;
+  let speed = P.fly ? (sprint ? 22 : 11) : (sneak ? 1.6 : sprint ? 6.2 : 4.4);
   if (W && W.mode === 'survival' && stats.food <= 6 && !P.fly) speed = Math.min(speed, 4.4);
+  const sneaking = sneak && !P.fly && !feetWater;
+  P.eye += ((sneaking ? 1.27 : 1.62) - P.eye) * Math.min(1, 14 * dt);
   if (feetWater && !P.fly) speed *= 0.62;
   const tx = (fx * iz + rx * ix) * speed, tz = (fz * iz + rz * ix) * speed;
   const acc = P.fly ? 8 : P.onGround ? 14 : feetWater ? 6 : 3.2;
   const k = Math.min(1, acc * dt);
   P.vx += (tx - P.vx) * k; P.vz += (tz - P.vz) * k;
   if (P.fly) {
-    const ty = ((K.Space ? 1 : 0) - (sprint ? 1 : 0)) * 10;
+    const ty = ((K.Space ? 1 : 0) - (sneak ? 1 : 0)) * 10;
     P.vy += (ty - P.vy) * Math.min(1, 8 * dt);
   } else if (feetWater) {
     P.vy -= 9 * dt; P.vy *= Math.max(0, 1 - 2.6 * dt);
@@ -1800,8 +1802,11 @@ function updatePlayer(dt, ctl) {
     P.vy = Math.max(-55, P.vy - 29 * dt);
     if (K.Space && P.onGround) { P.vy = 8.7; P.onGround = false; if (W && W.mode === 'survival') stats.exh += 0.6; }
   }
-  const wasGround = P.onGround;
+  const wasGround = P.onGround, ox = P.x, oy = P.y, oz = P.z;
   stepBody(P, dt);
+  if (sneaking && wasGround && !P.onGround && P.vy <= 0) {   // crouching keeps you from walking off an edge
+    P.x = ox; P.y = oy; P.z = oz; P.vx = P.vz = 0; P.vy = 0; P.onGround = true;
+  }
   if (feetWater || P.fly) P.peak = P.y;
   else if (P.onGround) {
     if (!wasGround) { const dmg = Math.floor(P.peak - P.y - 3); if (dmg > 0) hurtPlayer(dmg, null); }
