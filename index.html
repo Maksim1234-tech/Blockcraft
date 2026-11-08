@@ -3175,9 +3175,9 @@ function updateArm(sw, bob) {
   armG.visible = show; if (!show) return;
   const k = SKIN.name + '|' + SKIN.slim;
   if (!armParts || armKey !== k || armParts.tex.image !== SKIN.canvas) { buildArm(); armKey = k; }
-  armG.position.set(0.4 - sw * 0.1, -0.3 - sw * 0.1 + bob, -0.38 - sw * 0.2);
-  armG.rotation.set(1.25 - sw * 0.5, -0.45, 0.12);
-  armG.scale.setScalar(0.7);
+  armG.position.set(0.42 - sw * 0.04, -0.6 + sw * 0.06 + bob, -0.3 - sw * 0.2);   // shoulder below the screen, hand end up and forward
+  armG.rotation.set(2.45 - sw * 0.8, 0, -0.25);
+  armG.scale.setScalar(0.9);
 }
 
 /* ---- F5: camera modes (first person / third person back / third person front) ---- */
