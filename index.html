@@ -3171,7 +3171,7 @@ function buildArm() {
   root.layers.set(1); armG.add(root); armParts = { root, geos, mat, tex };
 }
 function updateArm(sw, bob) {
-  const show = camMode === 0 && !!W && state !== 'menu' && state !== 'dead';
+  const show = camMode === 0 && !!W && state !== 'menu' && state !== 'dead' && !inv[sel];   // only the empty hand is drawn
   armG.visible = show; if (!show) return;
   const k = SKIN.name + '|' + SKIN.slim;
   if (!armParts || armKey !== k || armParts.tex.image !== SKIN.canvas) { buildArm(); armKey = k; }
