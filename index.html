@@ -3156,6 +3156,30 @@ function setRemoteTarget(p, v) {
   if (!p.init) { p.init = true; p.x = p.tx; p.y = p.ty; p.z = p.tz; p.yaw = p.tyaw; p.pitch = p.tpitch; }
 }
 
+/* ---- first-person arm (your skin's right arm, bottom-right of the screen like in Minecraft) ---- */
+const armG = new THREE.Group(); let armKey = null, armParts = null;
+armG.visible = false; camera.add(armG);
+function buildArm() {
+  if (armParts) { armG.remove(armParts.root); armParts.geos.forEach(g => g.dispose()); armParts.mat.dispose(); armParts.tex.dispose(); }
+  const tex = new THREE.CanvasTexture(SKIN.canvas); tex.magFilter = tex.minFilter = THREE.NearestFilter; tex.generateMipmaps = false;
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, alphaTest: 0.5 }); mat.color.setScalar(0.82);
+  const aw = SKIN.slim ? 3 : 4, root = new THREE.Group(), geos = [];
+  for (const [grow, v] of [[0, 16], [0.3, 32]]) {
+    const g = skinBoxGeo(aw, 12, 4, 40, v, grow); geos.push(g);
+    const m = new THREE.Mesh(g, mat); m.position.y = -6 * PXU; m.renderOrder = 998; m.layers.set(1); root.add(m);
+  }
+  root.layers.set(1); armG.add(root); armParts = { root, geos, mat, tex };
+}
+function updateArm(sw, bob) {
+  const show = camMode === 0 && !!W && state !== 'menu' && state !== 'dead';
+  armG.visible = show; if (!show) return;
+  const k = SKIN.name + '|' + SKIN.slim;
+  if (!armParts || armKey !== k || armParts.tex.image !== SKIN.canvas) { buildArm(); armKey = k; }
+  armG.position.set(0.5 - sw * 0.14, -0.58 - sw * 0.1 + bob, 0.1 - sw * 0.2);
+  armG.rotation.set(1.25 - sw * 0.5, -0.45, 0.12);
+  armG.scale.setScalar(1.15);
+}
+
 /* ---- F5: camera modes (first person / third person back / third person front) ---- */
 let camMode = 0, selfP = null, selfKey = null, selfPhase = 0;
 const camSaved = { on: false, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 }, camDir = new THREE.Vector3();
@@ -3717,6 +3741,7 @@ function frame(now) {
     const sw = Math.sin(swing * Math.PI);
     const bob = state === 'playing' && !P.fly ? Math.sin(gtime * 9) * Math.min(1, Math.hypot(P.vx, P.vz) / 4) * 0.012 : 0;
     hand.position.set(HAND_POS.x - sw * 0.16, HAND_POS.y - sw * 0.14 + bob, HAND_POS.z - sw * 0.1);
+    updateArm(sw, bob);
     if (hid && isSprite(hid)) hand.rotation.set(0.1 - sw * 0.5, -0.35, 0.18); else hand.rotation.set(0.12 - sw * 0.7, -0.55, 0.05);
     if (sleep) {
       sleep.t += dt;
@@ -3737,7 +3762,7 @@ function frame(now) {
   underEl.style.display = underwater ? 'block' : 'none';
   camThirdPerson();
   renderer.render(scene, camera);
-  if (hand.visible) {   // second pass: held item, depth-sorted on its own so faces never bleed through each other
+  if (hand.visible || armG.visible) {   // second pass: held item, depth-sorted on its own so faces never bleed through each other
     renderer.autoClear = false; renderer.clearDepth(); camera.layers.set(1);
     renderer.render(scene, camera);
     camera.layers.set(0); renderer.autoClear = true;
