@@ -214,7 +214,7 @@ body.menu #chatlog{display:none}
     <button id="b-settings-back">Done</button>
     <div class="controls">
       <div><span>W A S D</span> move</div><div><span>Space</span> jump / swim up</div>
-      <div><span>Shift</span> crouch (fly: down)</div><div><span>R</span> run (hold)</div><div><span>Space x2 / F</span> fly (creative)</div>
+      <div><span>Shift</span> crouch (fly: down)</div><div><span>R</span> run (hold)</div><div><span>Space x2 / F</span> fly (creative)</div><div><span>F5</span> camera mode</div>
       <div><span>Left click</span> hit / break (hold)</div><div><span>Right click</span> place / eat (hold)</div>
       <div><span>Middle click</span> pick block</div><div><span>1-9 / wheel</span> hotbar</div>
       <div><span>Q</span> drop item (Ctrl+Q stack)</div><div><span>E</span> inventory + crafting</div>
@@ -2806,6 +2806,7 @@ async function exitToTitle() {
   showScreen('s-title');
 }
 async function enterWorld(rec, mp) {
+  camMode = 0;
   showScreen('loading'); $('loadtxt').textContent = 'LOADING WORLD...';
   await new Promise(r => setTimeout(r, 40));
   clearWorld(); W = rec; SEED = rec.seed | 0; VMODE = rec.vill || 'off'; vcache.clear(); invalidate();
@@ -3154,6 +3155,43 @@ function setRemoteTarget(p, v) {
   p.tx = v[0]; p.ty = v[1]; p.tz = v[2]; p.tyaw = v[3]; p.tpitch = v[4];
   if (!p.init) { p.init = true; p.x = p.tx; p.y = p.ty; p.z = p.tz; p.yaw = p.tyaw; p.pitch = p.tpitch; }
 }
+
+/* ---- F5: camera modes (first person / third person back / third person front) ---- */
+let camMode = 0, selfP = null, selfKey = null, selfPhase = 0;
+const camSaved = { on: false, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 }, camDir = new THREE.Vector3();
+function updateSelf(dt) {
+  const show = camMode > 0 && !!W && state !== 'menu' && state !== 'dead';
+  if (!selfP) { if (!show) return; selfP = makeRemotePlayer(S.name, SKIN.canvas, SKIN.slim); selfP.tag.visible = false; selfKey = null; }
+  selfP.group.visible = show;
+  if (!show) return;
+  const k = SKIN.name + '|' + SKIN.slim;
+  if (selfP.cv !== SKIN.canvas || selfKey !== k) { setPlayerSkin(selfP, SKIN.canvas, SKIN.slim); selfP.cv = SKIN.canvas; selfKey = k; }
+  const hid = inv[sel] ? inv[sel].id : 0; if (hid !== (selfP.heldId | 0)) setRemoteHeld(selfP, hid);
+  const sp = Math.hypot(P.vx, P.vz), moving = sp > 0.4 && P.onGround;
+  if (moving) selfPhase += Math.min(sp, 7) * dt * 2.2;
+  const sw = moving ? Math.sin(selfPhase) * 0.8 : 0, hit = Math.sin(swing * Math.PI);
+  selfP.legs[0].rotation.x = sw; selfP.legs[1].rotation.x = -sw;
+  selfP.arms[0].rotation.x = -sw * 0.8 - hit * 1.4; selfP.arms[1].rotation.x = sw * 0.8;
+  selfP.headG.rotation.x = -Math.max(-1.2, Math.min(1.2, P.pitch));
+  selfP.group.position.set(P.x, P.y, P.z); selfP.group.rotation.y = P.yaw + Math.PI;
+}
+function camThirdPerson() {   // moves the camera for the render only; everything else keeps using the eye position
+  camSaved.on = false;
+  if (camMode === 0 || !W || state === 'menu' || state === 'dead') return;
+  const c = camera; camSaved.on = true;
+  camSaved.x = c.position.x; camSaved.y = c.position.y; camSaved.z = c.position.z; camSaved.rx = c.rotation.x; camSaved.ry = c.rotation.y; camSaved.rz = c.rotation.z;
+  const ex = c.position.x, ey = c.position.y, ez = c.position.z;
+  c.updateMatrixWorld(); c.getWorldDirection(camDir);
+  const sg = camMode === 1 ? -1 : 1;           // back: behind you, front: facing you
+  let dist = 4;
+  for (let t = 0.3; t <= 4; t += 0.2) {        // stop in front of walls
+    const id = get(Math.floor(ex + sg * camDir.x * t), Math.floor(ey + sg * camDir.y * t), Math.floor(ez + sg * camDir.z * t));
+    if (DEF[id] && DEF[id].solid) { dist = Math.max(0.4, t - 0.3); break; }
+  }
+  c.position.set(ex + sg * camDir.x * dist, ey + sg * camDir.y * dist, ez + sg * camDir.z * dist);
+  if (camMode === 2) c.lookAt(ex, ey, ez);
+}
+function camRestore() { if (camSaved.on) { camera.position.set(camSaved.x, camSaved.y, camSaved.z); camera.rotation.set(camSaved.rx, camSaved.ry, camSaved.rz); camSaved.on = false; } }
 
 /* ---- mobs mirrored on guests ---- */
 function netApplyMobs(list) {
@@ -3532,7 +3570,7 @@ async function joinGame(code, silent) {
 /* ---- per-frame network tick ---- */
 function netTick(dt) {
   if (!NET.role) return;
-  updateRemotePlayers(dt);
+  updateRemotePlayers(dt); updateSelf(dt);
   if (!W || NET.loading) return;
   NET.tPos += dt;
   if (NET.tPos >= 0.1) {
@@ -3583,6 +3621,10 @@ window.addEventListener('keydown', e => {
   if (e.repeat) { keys[e.code] = true; return; }
   keys[e.code] = true;
   if (e.code === 'F3') { e.preventDefault(); shotPending = true; }   // screenshot
+  if (e.code === 'F5' && !e.ctrlKey && !e.metaKey) {   // camera mode
+    e.preventDefault();
+    if (W && state !== 'menu') { camMode = (camMode + 1) % 3; toast(['First person', 'Third person (back)', 'Third person (front)'][camMode]); }
+  }
   if (e.code === 'F4') { e.preventDefault(); S.debug = !S.debug; saveSettings(); $('set-debug').checked = S.debug; applySettings(); }   // debug info
   if (state === 'inventory') {
     if (e.code === 'KeyE' || e.code === 'Escape') { e.preventDefault(); closeInventory(); }
@@ -3670,7 +3712,7 @@ function frame(now) {
       handId = hid;
       if (hid) { hand.geometry = itemGeo(hid); hand.scale.setScalar(isSprite(hid) ? 0.6 : 0.36); }
     }
-    hand.visible = !!hid && state !== 'dead';
+    hand.visible = !!hid && state !== 'dead' && camMode === 0;
     swing = Math.max(0, swing - dt * 4.2);
     const sw = Math.sin(swing * Math.PI);
     const bob = state === 'playing' && !P.fly ? Math.sin(gtime * 9) * Math.min(1, Math.hypot(P.vx, P.vz) / 4) * 0.012 : 0;
@@ -3693,12 +3735,14 @@ function frame(now) {
     }
   }
   underEl.style.display = underwater ? 'block' : 'none';
+  camThirdPerson();
   renderer.render(scene, camera);
   if (hand.visible) {   // second pass: held item, depth-sorted on its own so faces never bleed through each other
     renderer.autoClear = false; renderer.clearDepth(); camera.layers.set(1);
     renderer.render(scene, camera);
     camera.layers.set(0); renderer.autoClear = true;
   }
+  camRestore();
   if (shotPending) {   // F3: save what's on screen (taken right after rendering so the buffer is valid)
     shotPending = false;
     try {
