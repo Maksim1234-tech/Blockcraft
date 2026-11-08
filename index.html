@@ -935,7 +935,7 @@ let W = null;             // current world record
 let savedChunks = new Map();
 const savedDirty = new Set();     // chunk keys whose data in savedChunks was edited while the chunk was not loaded
 const pendingEdits = new Map();   // block edits (from other players) waiting for their chunk to load
-const NET = { role: null, peer: null, code: '', conns: new Map(), myId: 0, nextId: 1, applying: false, players: new Map(), hostConn: null, tPos: 0, tMob: 0, tTime: 0, ghosts: new Map(), loading: false, inbox: [], lootTo: null, isOp: false, retry: null, rejoining: false, dropSeq: 0, stateT: 0, myName: '' };
+const NET = { role: null, peer: null, code: '', conns: new Map(), myId: 0, nextId: 1, applying: false, players: new Map(), hostConn: null, tPos: 0, tMob: 0, tTime: 0, ghosts: new Map(), loading: false, inbox: [], lootTo: null, isOp: false, keep: null, retry: null, rejoining: false, dropSeq: 0, stateT: 0, myName: '' };
 let tod = 0.12, dayF = 1;
 const stats = { hp: 20, food: 20, exh: 0, regenT: 0, starveT: 0, invul: 0 };
 let statsDirty = true;
@@ -2414,7 +2414,7 @@ function dragonDied(m) {
   for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) setBlock(cx + dx, by, cz + dz, Math.max(Math.abs(dx), Math.abs(dz)) === 2 ? B.OBSIDIAN : B.PORTAL);
   setBlock(cx + 4, by, cz, B.DRAGONEGG);
   addChat('The Ender Dragon has been slain! An exit portal opened in the middle of the island.', C_NET);
-  netBroadcast({ t: 'say', s: 'The Ender Dragon has been slain! An exit portal opened in the middle of the island.' });
+  netBroadcast({ t: 'say', s: 'The Ender Dragon has been slain! An exit portal opened in the middle of the island.' }); netBroadcast({ t: 'dd' });
   sfx(200, 0.8, 0.9); saveWorld();
 }
 function updateBossBar() {
@@ -3027,6 +3027,7 @@ function runCommand(line) {
 }
 
 /* ============================== persistence ============================== */
+const SERVER_CODE = (new URLSearchParams(location.search).get('server') || '').toUpperCase(), SERVER_MODE = /^[A-Z0-9]{5}$/.test(SERVER_CODE);   // ?server=ABCDE: a headless bot keeps this room open
 const DB = {
   ok: false, db: null,
   open() {
@@ -3710,7 +3711,7 @@ function playerPos(name) {
 }
 function sendMyState() {
   if (NET.role !== 'guest' || !W || NET.loading) return;
-  netSend(NET.hostConn, { t: 'state', inv: inv.map(q => q ? [q.id, q.n, q.d || 0] : 0), pos: [r2(P.x), r2(P.y), r2(P.z)], mode: W.mode, hp: stats.hp, food: stats.food });
+  netSend(NET.hostConn, { t: 'state', inv: inv.map(q => q ? [q.id, q.n, q.d || 0] : 0), pos: [r2(P.x), r2(P.y), r2(P.z)], mode: W.mode, hp: stats.hp, food: stats.food, armor: armor.map(a => a ? [a.id, a.d || 0] : 0) });
 }
 function netApplyBlock(d) {
   const cx = d.x >> 4, cz = d.z >> 4, c = getChunk(cx, cz);
@@ -3743,7 +3744,7 @@ function netClose() {
 const C_NET = '#ffe98a';
 
 /* ---- hosting ---- */
-async function hostGame() {
+async function hostGame(patient) {
   if (NET.role) return;
   const b = $('b-host'); b.textContent = 'Opening room...'; b.disabled = true;
   try {
@@ -3756,12 +3757,13 @@ async function hostGame() {
       p.on('error', e => { clearTimeout(to); try { p.destroy(); } catch (x) {} res(e.type === 'unavailable-id' ? null : 'ERR:' + e.type); });
     });
     if (want) {   // keep the same code every time this world is opened (the matchmaking server may still hold the old one for a few seconds)
-      for (let t = 0; t < 4 && !peer; t++) {
+      const TR = patient ? 14 : 4;
+      for (let t = 0; t < TR && !peer; t++) {
         const r = await open1(want); if (typeof r === 'string') throw new Error('Could not reach the matchmaking server (' + r.slice(4) + ').');
-        if (r) { peer = r; code = want; } else if (t < 3) await wait(3000);
+        if (r) { peer = r; code = want; } else if (t < TR - 1) await wait(3000);
       }
     }
-    for (let tries = 0; tries < 6 && !peer; tries++) {
+    for (let tries = 0; tries < 6 && !peer && !(patient && want); tries++) {
       const c = randCode(), r = await open1(c);
       if (typeof r === 'string') throw new Error('Could not reach the matchmaking server (' + r.slice(4) + ').');
       if (r) { peer = r; code = c; }
@@ -3797,7 +3799,7 @@ function netHostAccept(conn) {
       for (const [pid, p] of NET.players) players.push([pid, p.name, r2(p.tx), r2(p.ty), r2(p.tz), r2(p.tyaw), r2(p.tpitch), p.skinData]);
       addRemote(id, name, P.x, P.y, P.z, P.yaw, 0, skin);
       const isOp = !!(W.ops && W.ops.includes(name.toLowerCase())), saved = (W.pdata && W.pdata[name.toLowerCase()]) || null;
-      netSend(conn, { t: 'welcome', id, name, seed: SEED, vill: VMODE, mode: W.mode, diff: W.diff, tod, pos: [P.x, P.y, P.z], spawn: W.spawn || null, players, cmds: !!W.cmds, op: isOp, saved });
+      netSend(conn, { t: 'welcome', id, name, seed: SEED, vill: VMODE, mode: W.mode, diff: W.diff, tod, pos: [P.x, P.y, P.z], spawn: W.spawn || null, players, cmds: !!W.cmds, op: isOp, saved, dd: !!W.dragonDead });
       const out = new Map();
       for (const [k2, data] of savedChunks) out.set(k2, data);
       for (const c of chunks.values()) if (c.mod) out.set(c.cx + ',' + c.cz, c.data);
@@ -3834,7 +3836,7 @@ function netHandleHost(id, d) {
     case 'state': {
       const e = NET.conns.get(id); if (!e || !Array.isArray(d.inv)) break;
       W.pdata = W.pdata || {};
-      W.pdata[e.name.toLowerCase()] = { inv: d.inv.slice(0, 36).map(q => Array.isArray(q) ? [q[0] | 0, q[1] | 0, q[2] | 0] : 0), pos: (d.pos || []).slice(0, 3).map(Number), mode: d.mode === 'creative' ? 'creative' : 'survival', hp: +d.hp || 20, food: +d.food || 20 };
+      W.pdata[e.name.toLowerCase()] = { inv: d.inv.slice(0, 36).map(q => Array.isArray(q) ? [q[0] | 0, q[1] | 0, q[2] | 0] : 0), pos: (d.pos || []).slice(0, 3).map(Number), mode: d.mode === 'creative' ? 'creative' : 'survival', hp: +d.hp || 20, food: +d.food || 20, armor: Array.isArray(d.armor) ? d.armor.slice(0, 4).map(a => Array.isArray(a) ? [a[0] | 0, a[1] | 0] : 0) : [] };
       break;
     }
     case 'cmd': hostExecFor(id, d); break;
@@ -3971,6 +3973,7 @@ function netHandleGuest(d) {
     case 'gm': if (d.mode === 'survival' || d.mode === 'creative') { setMode(d.mode); addChat('The host set your game mode to ' + (d.mode === 'creative' ? 'Creative' : 'Survival') + ' Mode', C_NET); } break;
     case 'give': { const n = Math.min(2304, +d.n || 1), left = addItem(d.id, n); if (left > 0) throwItem(d.id, left); sfx(2200, 0.05, 0.25); addChat('The host gave you ' + n + ' [' + infoOf(d.id).n + ']', C_NET); break; }
     case 'say': addChat(String(d.s), d.bad ? C_ERR : C_OK); break;
+    case 'dd': W.dragonDead = true; break;
     case 'op': NET.isOp = !!d.on; addChat(d.on ? 'You are now a server operator. Type /help to see what you can use.' : 'You are no longer a server operator.', C_NET); break;
     case 'cmds': W.cmds = !!d.on; addChat('Commands were turned ' + (d.on ? 'on' : 'off') + ' by the host.', C_NET); break;
     case 'drop': if (typeof d.did === 'string' && Number.isInteger(d.id) && d.id > 0 && d.id < 400 && [d.x, d.y, d.z, d.vx, d.vy, d.vz].every(Number.isFinite)) spawnItem(d.id, Math.min(64, d.n | 0 || 1), d.x, d.y, d.z, d.vx, d.vy, d.vz, 0.8, d.d || undefined, d.did); break;
@@ -3978,13 +3981,33 @@ function netHandleGuest(d) {
     case 'loot': spawnItem(d.id, d.n, d.x, d.y, d.z, (Math.random() - 0.5) * 2, 3, (Math.random() - 0.5) * 2, 0.5); break;
   }
 }
+const captureState = () => ({ inv: inv.map(q => q ? [q.id, q.n, q.d || 0] : 0), pos: [P.x, P.y, P.z], mode: W.mode, hp: stats.hp, food: stats.food, armor: armor.map(a => a ? [a.id, a.d || 0] : 0) });
 function netHostLost() {
   if (NET.role !== 'guest') return;
   const code = NET.code;
+  if (W && !NET.loading) NET.keep = captureState();
+  // the host left: the guest with the lowest id takes the room over (same code), everybody else reconnects to it
+  const others = [...NET.players.keys()];
+  if (W && !NET.loading && others.length && others.every(id => id > NET.myId)) { migrateToHost(code); return; }
   netClose(); document.exitPointerLock(); held = null; renderHeld(); setupDemo();
   showScreen('s-join'); $('join-code').value = code; $('b-join-go').disabled = false;
   const el = $('join-msg'); el.textContent = 'The host went offline. Reconnecting automatically when they are back... (Back to cancel)'; el.style.color = '';
   NET.retry = code; autoRejoin();
+}
+async function migrateToHost(code) {
+  netClose(); NET.retry = null;
+  for (const [k, list] of [...pendingEdits]) { const [cx, cz] = k.split(',').map(Number); for (const [lx, y, lz, id] of list) editOffline(cx * CS + lx, y, cz * CS + lz, id); }
+  pendingEdits.clear();
+  W.guest = false; W.id = 'mp' + code.toLowerCase() + Date.now().toString(36); W.name = 'Server ' + code;
+  W.roomCode = code; W.hosting = true; W.ops = []; W.pdata = {}; W.created = W.played = Date.now();
+  for (const c of chunks.values()) if (c.mod) c.saveDirty = true;
+  for (const k of savedChunks.keys()) savedDirty.add(k);
+  for (const m of mobs) { delete m.tx; delete m.ty; delete m.tz; delete m.tyaw; m.vx = m.vy = m.vz = 0; }
+  if (DB.ok) await DB.saveAll(W, []);
+  addChat('The host left. You are now hosting this room (code ' + code + '), everyone else reconnects automatically.', C_NET);
+  toast('You are the new host of room ' + code);
+  await hostGame(true);
+  if (NET.role !== 'host') addChat('Could not take over the room code. The world was saved on your computer; press Esc to open it to friends again.', C_ERR);
 }
 async function autoRejoin() {
   if (NET.rejoining) return; NET.rejoining = true;
@@ -4011,9 +4034,10 @@ async function joinGame(code, silent) {
     NET.code = code; NET.isOp = !!r.w.op; NET.myName = r.w.name;
     r.peer.on('error', () => {});
     for (const [k, list] of r.pend) pendingEdits.set(k, (pendingEdits.get(k) || []).concat(list));
-    const sv = r.w.saved;   // inventory, position and mode the host remembers for this player name
+    const sv = r.w.saved || NET.keep;   // inventory, position and mode the host (or this very tab, after the host left) remembers
+    NET.keep = null;
     const rec = { id: 'mp-guest', name: 'Multiplayer', seed: r.w.seed, vill: r.w.vill, mode: sv ? sv.mode : 'survival', diff: r.w.diff, cmds: !!r.w.cmds, guest: true,
-                  tod: r.w.tod, spawn: r.w.spawn, player: null, inv: sv ? sv.inv : null, stats: sv ? { hp: sv.hp, food: sv.food } : null, created: Date.now(), played: Date.now() };
+                  tod: r.w.tod, spawn: r.w.spawn, player: null, inv: sv ? sv.inv : null, armor: sv ? sv.armor : null, dragonDead: !!r.w.dd, stats: sv ? { hp: sv.hp, food: sv.food } : null, created: Date.now(), played: Date.now() };
     const pend = new Map(pendingEdits);
     await enterWorld(rec, { chunks: r.chunks, pos: sv && sv.pos && sv.pos.length === 3 ? sv.pos : r.w.pos, pend });
     for (const [id, name, x, y, z, yaw, pitch, skin] of r.w.players) if (id !== NET.myId) addRemote(id, name, x, y, z, yaw, pitch, skin);
@@ -4200,8 +4224,8 @@ function frame(now) {
   }
   underEl.style.display = underwater ? 'block' : 'none'; underEl.style.background = underLava ? 'rgba(255,90,10,.62)' : '';
   camThirdPerson();
-  renderer.render(scene, camera);
-  if (hand.visible || armG.visible) {   // second pass: held item, depth-sorted on its own so faces never bleed through each other
+  if (!SERVER_MODE) renderer.render(scene, camera);
+  if (!SERVER_MODE && (hand.visible || armG.visible)) {   // second pass: held item, depth-sorted on its own so faces never bleed through each other
     renderer.autoClear = false; renderer.clearDepth(); camera.layers.set(1);
     renderer.render(scene, camera);
     camera.layers.set(0); renderer.autoClear = true;
@@ -4235,6 +4259,19 @@ async function boot() {
     await new Promise(r => setTimeout(r, 16));
   }
   showScreen('s-title');
+  if (SERVER_MODE) startServerMode();
+}
+async function startServerMode() {
+  S.name = 'Server';
+  const list = await DB.worlds();
+  let rec = list.find(w => w.roomCode === SERVER_CODE && !w.guest);
+  if (!rec) {
+    rec = { id: 'srv' + SERVER_CODE.toLowerCase(), name: 'Server ' + SERVER_CODE, seed: Math.floor(Math.random() * 2147483647), vill: 'normal', mode: 'survival', diff: 'easy', cmds: true,
+            created: Date.now(), played: Date.now(), player: null, inv: null, tod: 0.09, spawn: null, roomCode: SERVER_CODE, hosting: true };
+    if (DB.ok) await DB.saveAll(rec, []);
+  }
+  rec.hosting = true; rec.roomCode = SERVER_CODE;
+  enterWorld(rec);
 }
 if (typeof THREE === 'undefined') {
   $('loadtxt').textContent = 'Could not load Three.js (internet connection needed)';
